@@ -1,8 +1,8 @@
 import { CombatRequestKeys, RoomMemoryKeys, customColors } from 'international/constants'
-import { advancedFindDistance, customLog } from 'international/utils'
+import { advancedFindDistance } from 'utils/utils'
 import { collectiveManager } from 'international/collective'
 import { CommuneManager } from './commune'
-import { updateStat } from 'international/statsManager'
+import { statsManager } from 'international/statsManager'
 
 export class CombatRequestManager {
     communeManager: CommuneManager
@@ -13,8 +13,6 @@ export class CombatRequestManager {
 
     public run() {
         const { room } = this.communeManager
-
-        if (global.settings.CPULogging === true) var managerCPUStart = Game.cpu.getUsed()
 
         for (
             let index = room.memory[RoomMemoryKeys.combatRequests].length - 1;
@@ -48,18 +46,6 @@ export class CombatRequestManager {
 
             this[`${request[CombatRequestKeys.type]}Request`](requestName, index)
         }
-
-        // If CPU logging is enabled, log the CPU used by this manager
-
-        if (global.settings.CPULogging === true) {
-            const cpuUsed = Game.cpu.getUsed() - managerCPUStart
-            customLog('Combat Request Manager', cpuUsed.toFixed(2), {
-                textColor: customColors.white,
-                bgColor: customColors.lightBlue,
-            })
-            const statName: RoomCommuneStatNames = 'cormcu'
-            updateStat(room.name, statName, cpuUsed)
-        }
     }
 
     private canKeepRequest() {
@@ -91,7 +77,7 @@ export class CombatRequestManager {
 
         // If there are threats to our hegemony, temporarily abandon the request
         /*
-        if (requestRoom.enemyAttackers.length > 0) {
+        if (requestRoom.roomManager.enemyAttackers.length > 0) {
             request[CombatRequestKeys.abandon] = 1500
 
             room.memory.combatRequests.splice(index, 1)
@@ -109,15 +95,20 @@ export class CombatRequestManager {
             return
         }
 
-        // If there are no enemyCreeps, delete the combatRequest
+        const enemySquadData = requestRoom.roomManager.enemySquadData
 
+        request[CombatRequestKeys.minRangedHeal] = Math.max(enemySquadData.highestRangedDamage, 1)
+        request[CombatRequestKeys.minDamage] = enemySquadData.highestHeal * 1.2
+
+        // If there are no enemyCreeps
         if (
-            !requestRoom.enemyCreeps.length &&
+            !requestRoom.roomManager.notMyCreeps.enemy.length &&
             (!requestRoom.controller || !requestRoom.controller.owner)
         ) {
-            this.communeManager.deleteCombatRequest(requestName, index)
-            return
-        }
+            request[CombatRequestKeys.inactionTimer] -= 1
+            this.manageInaction(requestName, index)
+        } else
+            request[CombatRequestKeys.inactionTimer] = request[CombatRequestKeys.inactionTimerMax]
     }
 
     private harassRequest(requestName: string, index: number) {
@@ -138,26 +129,23 @@ export class CombatRequestManager {
  */
         // If there are threats to our hegemony, temporarily abandon the request
 
-        const threateningAttacker = requestRoom.enemyAttackers.find(
+        const threateningAttacker = requestRoom.roomManager.enemyAttackers.find(
             creep => creep.combatStrength.ranged + creep.combatStrength.ranged > 0,
         )
 
         if (threateningAttacker) {
             request[CombatRequestKeys.abandon] = 1500
 
-            room.memory[RoomMemoryKeys.combatRequests].splice(index, 1)
-            delete request[CombatRequestKeys.responder]
+            this.communeManager.deleteCombatRequest(requestName, index)
             return
         }
 
-        // If there are no enemyCreeps, delete the combatRequest
-
-        if (!requestRoom.enemyCreeps.length) {
-            request[CombatRequestKeys.abandon] = 1500
-            request[CombatRequestKeys.abandonments] += 1
-            this.manageAbandonment(requestName, index)
-            return
-        }
+        // If there are no enemyCreeps
+        if (!requestRoom.roomManager.notMyCreeps.enemy.length) {
+            request[CombatRequestKeys.inactionTimer] -= 1
+            this.manageInaction(requestName, index)
+        } else
+            request[CombatRequestKeys.inactionTimer] = request[CombatRequestKeys.inactionTimerMax]
     }
 
     private defendRequest(requestName: string, index: number) {
@@ -173,18 +161,32 @@ export class CombatRequestManager {
             return
         }
 
-        for (const enemyCreep of requestRoom.enemyAttackers) {
-            if (enemyCreep.combatStrength.ranged > request[CombatRequestKeys.minRangedHeal] * 4)
-                request[CombatRequestKeys.minRangedHeal] = enemyCreep.combatStrength.ranged + 1
+        const hasTowers = !!room.roomManager.structures.tower.length
 
-            if (
-                enemyCreep.combatStrength.heal >
-                request[CombatRequestKeys.minDamage] * enemyCreep.defenceStrength * 4
-            )
-                request[CombatRequestKeys.minDamage] = enemyCreep.combatStrength.heal + 1
+        let minDamage = 0
+        let minMeleeHeal = 0
+        let minRangedHeal = 0
+
+        for (const enemyCreep of room.roomManager.enemyAttackers) {
+            // If we have tower(s) and its an invader, don't care about it
+            if (hasTowers && enemyCreep.owner.username === 'Invader') {
+
+                continue
+            }
+
+            minDamage += Math.max(enemyCreep.combatStrength.heal * 1.2, Math.ceil(enemyCreep.hits / 50))
+            minMeleeHeal += enemyCreep.combatStrength.melee + enemyCreep.combatStrength.ranged
+            minRangedHeal += enemyCreep.combatStrength.ranged
+
+
         }
 
-        if (!requestRoom.enemyDamageThreat) {
+        request[CombatRequestKeys.minRangedHeal] = Math.max(request[CombatRequestKeys.minRangedHeal], minRangedHeal)
+        request[CombatRequestKeys.minMeleeHeal] = Math.max(request[CombatRequestKeys.minRangedHeal], minMeleeHeal)
+        request[CombatRequestKeys.minDamage] = Math.max(request[CombatRequestKeys.minRangedHeal], minDamage)
+
+        // If there is nothing to defend from right now
+        if (!requestRoom.roomManager.enemyDamageThreat) {
             request[CombatRequestKeys.inactionTimer] -= 1
             this.manageInaction(requestName, index)
         } else

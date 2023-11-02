@@ -1,19 +1,15 @@
 import { creepClasses } from 'room/creeps/creepClasses'
 import { customColors, remoteRoles } from './constants'
-import { customLog } from './utils'
+import { customLog } from 'utils/logging'
 import { collectiveManager, CollectiveManager } from './collective'
 import { packCoord } from 'other/codec'
 import { powerCreepClasses } from 'room/creeps/powerCreepClasses'
-import { updateStat } from './statsManager'
+import { statsManager } from './statsManager'
 
 class PowerCreepOrganizer {
     constructor() {}
 
     public run() {
-        // If CPU logging is enabled, get the CPU used at the start
-
-        if (global.settings.CPULogging === true) var managerCPUStart = Game.cpu.getUsed()
-
         // Clear non-existent creeps from memory
 
         for (const creepName in Memory.powerCreeps) {
@@ -27,16 +23,6 @@ class PowerCreepOrganizer {
         for (const creepName in Game.powerCreeps) {
             this.processCreep(creepName)
         }
-
-        if (global.settings.CPULogging === true) {
-            const cpuUsed = Game.cpu.getUsed() - managerCPUStart
-            customLog('Power Creep Organizer', cpuUsed.toFixed(2), {
-                textColor: customColors.white,
-                bgColor: customColors.lightBlue,
-            })
-            const statName: InternationalStatNames = 'pccu'
-            updateStat('', statName, cpuUsed, true)
-        }
     }
 
     private processCreep(creepName: string) {
@@ -48,6 +34,8 @@ class PowerCreepOrganizer {
             collectiveManager.unspawnedPowerCreepNames.push(creep.name)
             return
         }
+
+        collectiveManager.powerCreepCount
 
         // Get the creep's role
 
@@ -72,7 +60,7 @@ class PowerCreepOrganizer {
 
         room.myPowerCreepsAmount += 1
 
-        creep.preTickManager()
+        creep.initRun()
     }
 }
 

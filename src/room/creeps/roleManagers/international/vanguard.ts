@@ -1,5 +1,11 @@
-import { WorkRequestKeys, CreepMemoryKeys, Result, RoomTypes } from 'international/constants'
-import { findObjectWithID, getRangeXY, getRange } from 'international/utils'
+import {
+    WorkRequestKeys,
+    CreepMemoryKeys,
+    Result,
+    RoomTypes,
+    ReservedCoordTypes,
+} from 'international/constants'
+import { findObjectWithID, getRangeXY, getRange } from 'utils/utils'
 import { unpackCoord } from 'other/codec'
 
 export class Vanguard extends Creep {
@@ -7,7 +13,18 @@ export class Vanguard extends Creep {
         super(creepID)
     }
 
-    preTickManager() {
+    update() {
+        const packedCoord = Memory.creeps[this.name][CreepMemoryKeys.packedCoord]
+        if (packedCoord) {
+            if (this.isDying()) {
+                this.room.roomManager.reserveCoord(packedCoord, ReservedCoordTypes.dying)
+            } else {
+                this.room.roomManager.reserveCoord(packedCoord, ReservedCoordTypes.important)
+            }
+        }
+    }
+
+    initRun() {
         if (this.isDying()) return
 
         if (this.memory[CreepMemoryKeys.sourceIndex] !== undefined)
@@ -191,7 +208,7 @@ export class Vanguard extends Creep {
                 typeWeights: {
                     [RoomTypes.enemy]: Infinity,
                     [RoomTypes.ally]: Infinity,
-                    [RoomTypes.keeper]: Infinity,
+                    [RoomTypes.sourceKeeper]: Infinity,
                 },
             }) === Result.fail
         ) {

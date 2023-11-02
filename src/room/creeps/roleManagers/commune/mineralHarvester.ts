@@ -1,10 +1,22 @@
-import { Result, RoomMemoryKeys } from 'international/constants'
-import { updateStat } from 'international/statsManager'
-import { getRangeXY, getRange } from 'international/utils'
+import {
+    CreepMemoryKeys,
+    ReservedCoordTypes,
+    Result,
+    RoomMemoryKeys,
+} from 'international/constants'
+import { statsManager } from 'international/statsManager'
+import { getRangeXY, getRange, areCoordsEqual } from 'utils/utils'
 import { reversePosList, unpackPos } from 'other/codec'
 
 export class MineralHarvester extends Creep {
-    preTickManager() {
+    update() {
+        const packedCoord = Memory.creeps[this.name][CreepMemoryKeys.packedCoord]
+        if (packedCoord) {
+            this.room.roomManager.reserveCoord(packedCoord, ReservedCoordTypes.important)
+        }
+    }
+
+    initRun() {
         this.room.communeManager.mineralHarvestStrength += this.parts.work * HARVEST_MINERAL_POWER
     }
 
@@ -51,7 +63,7 @@ export class MineralHarvester extends Creep {
             mineral.mineralAmount,
         )
         this.reserveStore[mineral.mineralType] += mineralsHarvested
-        updateStat(this.room.name, 'mh', mineralsHarvested)
+        statsManager.updateStat(this.room.name, 'mh', mineralsHarvested)
 
         this.message = `⛏️${mineralsHarvested}`
         return Result.success
@@ -76,9 +88,11 @@ export class MineralHarvester extends Creep {
 
             if (creep.advancedHarvestMineral(mineral) !== Result.success) continue
 
-            const mineralContainer = room.mineralContainer
+            const mineralContainer = room.roomManager.mineralContainer
             if (
                 mineralContainer &&
+                // No need to transfer if we're on top of the container
+                !areCoordsEqual(mineralContainer.pos, creep.pos) &&
                 creep.reserveStore[mineral.mineralType] >= creep.store.getCapacity()
             ) {
                 creep.transfer(mineralContainer, mineral.mineralType)

@@ -4,10 +4,10 @@ import {
     CombatRequestKeys,
     RoomMemoryKeys,
 } from 'international/constants'
-import { advancedFindDistance, customLog } from 'international/utils'
+import { advancedFindDistance, randomTick } from 'utils/utils'
 import { collectiveManager } from 'international/collective'
 import { CommuneManager } from './commune'
-import { updateStat } from 'international/statsManager'
+import { statsManager } from 'international/statsManager'
 
 export class HaulRequestManager {
     communeManager: CommuneManager
@@ -26,7 +26,8 @@ export class HaulRequestManager {
             if (
                 !request ||
                 !room.roomManager.structures.spawn.length ||
-                room.resourcesInStoringStructures.energy < this.communeManager.minStoredEnergy
+                room.roomManager.resourcesInStoringStructures.energy <
+                    this.communeManager.minStoredEnergy
             ) {
                 this.communeManager.room.memory[RoomMemoryKeys.haulRequests].splice(index, 1)
                 continue
@@ -35,8 +36,9 @@ export class HaulRequestManager {
             // The room is closed or is now a respawn or novice zone
 
             if (
+                randomTick(20) &&
                 Game.map.getRoomStatus(requestName).status !==
-                Game.map.getRoomStatus(room.name).status
+                    Game.map.getRoomStatus(room.name).status
             ) {
                 delete Memory.haulRequests[requestName]
                 room.memory[RoomMemoryKeys.haulRequests].splice(index, 1)
@@ -60,7 +62,6 @@ export class HaulRequestManager {
     public run() {
         const { room } = this.communeManager
         return
-        if (global.settings.CPULogging === true) var managerCPUStart = Game.cpu.getUsed()
 
         for (let index = 0; index < room.memory[RoomMemoryKeys.haulRequests].length; index++) {
             const requestName = room.memory[RoomMemoryKeys.haulRequests][index]
@@ -74,8 +75,9 @@ export class HaulRequestManager {
             // The room is closed or is now a respawn or novice zone
 
             if (
+                randomTick(20) &&
                 Game.map.getRoomStatus(requestName).status !==
-                Game.map.getRoomStatus(room.name).status
+                    Game.map.getRoomStatus(room.name).status
             ) {
                 delete Memory.haulRequests[requestName]
                 room.memory[RoomMemoryKeys.haulRequests].splice(index, 1)
@@ -87,18 +89,6 @@ export class HaulRequestManager {
                 this.transferRequest(requestName, index)
             this.withdrawRequest(requestName, index)
         }
-
-        // If CPU logging is enabled, log the CPU used by this manager
-
-        if (global.settings.CPULogging === true) {
-            const cpuUsed = Game.cpu.getUsed() - managerCPUStart
-            customLog('Haul Request Manager', cpuUsed.toFixed(2), {
-                textColor: customColors.white,
-                bgColor: customColors.lightBlue,
-            })
-            const statName: RoomCommuneStatNames = 'cormcu'
-            updateStat(room.name, statName, cpuUsed)
-        }
     }
 
     private transferRequest(requestName: string, index: number) {
@@ -109,7 +99,7 @@ export class HaulRequestManager {
 
         // If there are threats to our hegemony, temporarily abandon the request
         /*
-        if (requestRoom.enemyAttackers.length > 0) {
+        if (requestRoom.roomManager.enemyAttackers.length > 0) {
             request[CombatRequestKeys.abandon] = 1500
 
             room.memory.haulRequests.splice(index, 1)
@@ -130,7 +120,7 @@ export class HaulRequestManager {
         // If there are no enemyCreeps, delete the combatRequest
 
         if (
-            !requestRoom.enemyCreeps.length &&
+            !requestRoom.roomManager.notMyCreeps.enemy.length &&
             (!requestRoom.controller || !requestRoom.controller.owner)
         ) {
             delete Memory.haulRequests[requestName]

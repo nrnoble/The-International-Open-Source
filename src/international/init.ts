@@ -1,3 +1,4 @@
+import { getMe } from 'utils/utils'
 import { playerManager } from './players'
 import { statsManager } from './statsManager'
 
@@ -13,7 +14,7 @@ class InitManager {
      * Make sure we have configured memory for allies
      */
     initAllies() {
-        for (const playerName in global.settings.allies) {
+        for (const playerName of global.settings.allies) {
             if (Memory.players[playerName]) continue
 
             playerManager.initPlayer(playerName)
@@ -26,10 +27,10 @@ class InitManager {
         if (Memory.breakingVersion) return
 
         Memory.breakingVersion = global.settings.breakingVersion
-        Memory.me =
-            (Object.values(Game.structures)[0] as OwnedStructure)?.owner?.username ||
+        Memory.me = getMe()
+            /* (Object.values(Game.structures)[0] as OwnedStructure)?.owner?.username ||
             Object.values(Game.creeps)[0]?.owner?.username ||
-            'username'
+            'username' */
 
         // Construct foundation
 
@@ -55,9 +56,6 @@ class InitManager {
         if (global.constructed) return
 
         global.constructed = true
-
-        global.roomManagers = {}
-        global.communeManagers = {}
 
         global.packedRoomNames = {}
         global.unpackedRoomNames = {}

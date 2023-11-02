@@ -6,7 +6,8 @@ import {
     customColors,
     squadQuotas,
 } from 'international/constants'
-import { customLog, findClosestObject, getRangeXY, isExit, isXYExit } from 'international/utils'
+import { customLog } from 'utils/logging'
+import { findClosestObject, getRangeXY, isExit, isXYExit } from 'utils/utils'
 import { collectiveManager } from 'international/collective'
 import { Duo } from './duo'
 import { Quad } from './quad'
@@ -16,7 +17,7 @@ export class Antifa extends Creep {
         super(creepID)
     }
 
-    preTickManager() {
+    initRun() {
         if (collectiveManager.creepsByCombatRequest[this.memory[CreepMemoryKeys.combatRequest]])
             collectiveManager.creepsByCombatRequest[this.memory[CreepMemoryKeys.combatRequest]][
                 this.role
@@ -87,9 +88,12 @@ export class Antifa extends Creep {
         if (!this.findSquad()) {
             const request = Memory.combatRequests[creepMemory[CreepMemoryKeys.combatRequest]]
             // Either we're in our home commune or are request is for this room
-            if (this.commune.name === this.room.name || (request && request[CombatRequestKeys.responder] === this.room.name)) {
+            if (
+                this.commune.name === this.room.name ||
+                (request && request[CombatRequestKeys.responder] === this.room.name)
+            ) {
                 // run singleton logic while we wait to form a squad
-                return false
+                return true
             }
 
             return true
@@ -174,7 +178,7 @@ export class Antifa extends Creep {
         )
             return false
 
-        const memberNames: string[] = []
+        const memberNames: string[] = [this.name]
 
         for (const memberName of creepMemory[CreepMemoryKeys.squadMembers]) {
             // We don't need others to think we need a squad when we have one now
@@ -235,7 +239,7 @@ export class Antifa extends Creep {
                 typeWeights: {
                     [RoomTypes.enemy]: Infinity,
                     [RoomTypes.ally]: Infinity,
-                    [RoomTypes.keeper]: Infinity,
+                    [RoomTypes.sourceKeeper]: Infinity,
                 },
             })
             return
@@ -256,7 +260,7 @@ export class Antifa extends Creep {
             typeWeights: {
                 [RoomTypes.enemy]: Infinity,
                 [RoomTypes.ally]: Infinity,
-                [RoomTypes.keeper]: Infinity,
+                [RoomTypes.sourceKeeper]: Infinity,
             },
         })
     }
@@ -270,20 +274,20 @@ export class Antifa extends Creep {
     advancedRangedAttack?() {
         const { room } = this
 
-        let enemyAttackers = room.enemyAttackers.filter(function (creep) {
+        let enemyAttackers = room.roomManager.enemyAttackers.filter(function (creep) {
             return !creep.isOnExit
         })
 
-        if (!enemyAttackers.length) enemyAttackers = room.enemyAttackers
+        if (!enemyAttackers.length) enemyAttackers = room.roomManager.enemyAttackers
 
         // If there are none
 
         if (!enemyAttackers.length) {
-            let enemyCreeps = room.enemyCreeps.filter(function (creep) {
+            let enemyCreeps = room.roomManager.notMyCreeps.enemy.filter(function (creep) {
                 return !creep.isOnExit
             })
 
-            if (!enemyCreeps.length) enemyCreeps = room.enemyCreeps
+            if (!enemyCreeps.length) enemyCreeps = room.roomManager.notMyCreeps.enemy
 
             if (!enemyCreeps.length) {
                 if (this.aggressiveHeal()) return true
@@ -402,7 +406,7 @@ export class Antifa extends Creep {
     rangedAttackStructures?() {
         this.message = 'RAS'
 
-        const structures = this.room.combatStructureTargets
+        const structures = this.room.roomManager.combatStructureTargets
 
         if (!structures.length) return false
 
@@ -449,20 +453,20 @@ export class Antifa extends Creep {
     advancedAttack?() {
         const { room } = this
 
-        let enemyAttackers = room.enemyAttackers.filter(function (creep) {
+        let enemyAttackers = room.roomManager.enemyAttackers.filter(function (creep) {
             return !creep.isOnExit
         })
 
-        if (!enemyAttackers.length) enemyAttackers = room.enemyAttackers
+        if (!enemyAttackers.length) enemyAttackers = room.roomManager.enemyAttackers
 
         // If there are none
 
         if (!enemyAttackers.length) {
-            let enemyCreeps = room.enemyCreeps.filter(function (creep) {
+            let enemyCreeps = room.roomManager.notMyCreeps.enemy.filter(function (creep) {
                 return !creep.isOnExit
             })
 
-            if (!enemyCreeps) enemyCreeps = room.enemyCreeps
+            if (!enemyCreeps) enemyCreeps = room.roomManager.notMyCreeps.enemy
 
             if (!enemyCreeps.length) return this.attackStructures()
 
@@ -525,7 +529,7 @@ export class Antifa extends Creep {
     attackStructures?() {
         this.message = 'AS'
 
-        const structures = this.room.combatStructureTargets
+        const structures = this.room.roomManager.combatStructureTargets
 
         if (!structures.length) return false
 
@@ -572,7 +576,7 @@ export class Antifa extends Creep {
     advancedDismantle?() {
         // Avoid targets we can't dismantle
 
-        const structures = this.room.combatStructureTargets
+        const structures = this.room.roomManager.combatStructureTargets
 
         if (!structures.length) return false
 
@@ -621,7 +625,7 @@ export class Antifa extends Creep {
 
         // Filter only enemy construction sites worth stomping
 
-        const enemyCSites = this.room.enemyCSites.filter(
+        const enemyCSites = this.room.roomManager.notMyConstructionSites.enemy.filter(
             cSite => cSite.progress > 0 && !isExit(cSite.pos),
         )
 

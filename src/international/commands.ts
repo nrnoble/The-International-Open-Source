@@ -1,4 +1,5 @@
-import { allStructureTypes, WorkRequestKeys, CombatRequestKeys, RoomMemoryKeys } from './constants'
+import { collectiveManager } from './collective'
+import { allStructureTypes, WorkRequestKeys, CombatRequestKeys, RoomMemoryKeys, RoomTypes } from './constants'
 
 const importantStructures: StructureConstant[] = [STRUCTURE_SPAWN]
 
@@ -7,7 +8,6 @@ global.clearGlobal = function () {
 
     Game.cpu?.halt()
 }
-global.CG = global.clearGlobal
 
 /**
  * Delete properties in Memory
@@ -22,7 +22,6 @@ global.clearMemory = function () {
 
     return 'Cleared all of Memory'
 }
-global.CM = global.clearMemory
 
 global.killCreeps = function (roles?) {
     // Cancel spawning in communes
@@ -54,8 +53,6 @@ global.killCreeps = function (roles?) {
 
     return `Killed an total of ${killedCreepCount} creeps ${roles ? `with the roles ${roles}` : ''}`
 }
-global.marxistLeninism = global.killCreeps
-global.genocide = global.killCreeps
 
 global.removeCSites = function (removeInProgress, types?) {
     let removedCSCount = 0
@@ -77,9 +74,9 @@ global.removeCSites = function (removeInProgress, types?) {
 
 global.destroyStructures = function (roomName, types?) {
     if (!roomName) {
-        if (global.communes.size > 1) return 'Provide a room name'
+        if (collectiveManager.communes.size > 1) return 'Provide a room name'
 
-        roomName = Array.from(global.communes)[0]
+        roomName = Array.from(collectiveManager.communes)[0]
     }
 
     // Get the room with the roomName
@@ -118,7 +115,7 @@ global.destroyCommuneStructures = function (types?) {
     let log = ``
     let destroyedStructureCount: number
 
-    for (const roomName of global.communes) {
+    for (const roomName of collectiveManager.communes) {
         // Get the room with the roomName
 
         const room = Game.rooms[roomName]
@@ -235,8 +232,15 @@ global.combat = function (requestName, type, opts, communeName) {
         const roomMemory = Memory.rooms[communeName]
         if (!roomMemory) return `No memory for ${communeName}`
 
+        if (roomMemory[RoomMemoryKeys.type] !== RoomTypes.commune) return `${communeName} is not of room type commune`
+
+        // Assign values
+
         request[CombatRequestKeys.responder] = communeName
-        roomMemory[RoomMemoryKeys.combatRequests].push(requestName)
+        if (!roomMemory[RoomMemoryKeys.combatRequests].includes(requestName)) {
+
+            roomMemory[RoomMemoryKeys.combatRequests].push(requestName)
+        }
     }
 
     return `${
@@ -264,19 +268,19 @@ global.deleteCombatRequest = function (requestName) {
 
 global.deleteBasePlans = function (roomName) {
     if (!roomName) {
-        if (global.communes.size > 1) return 'Provide a room name'
+        if (collectiveManager.communes.size > 1) return 'Provide a room name'
 
-        roomName = Array.from(global.communes)[0]
+        roomName = Array.from(collectiveManager.communes)[0]
     }
 
     const room = Game.rooms[roomName]
     if (!room) return 'No vision in ' + roomName
 
     delete room.memory[RoomMemoryKeys.communePlanned]
+    room.roomManager._basePlans = undefined
 
     return 'Deleted base plans for ' + roomName
 }
-global.DBP = global.deleteBasePlans
 
 global.usedHeap = function () {
     const usedHeap =

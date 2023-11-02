@@ -5,7 +5,7 @@ export class Claimer extends Creep {
         super(creepID)
     }
 
-    preTickManager() {
+    initRun() {
         if (this.isDying()) return
 
         const request = Memory.workRequests[this.memory[CreepMemoryKeys.taskRoom]]
@@ -88,7 +88,7 @@ export class Claimer extends Creep {
                     typeWeights: {
                         [RoomTypes.enemy]: Infinity,
                         [RoomTypes.ally]: Infinity,
-                        [RoomTypes.keeper]: Infinity,
+                        [RoomTypes.sourceKeeper]: Infinity,
                     },
                 }) === Result.fail
             ) {

@@ -5,7 +5,7 @@ import {
     RoomTypes,
     remoteTypeWeights,
 } from 'international/constants'
-import { findClosestObject, getRangeXY, randomIntRange } from 'international/utils'
+import { findClosestObject, getRangeXY, randomIntRange } from 'utils/utils'
 import { packCoord } from 'other/codec'
 
 export class RemoteDefender extends Creep {
@@ -23,7 +23,7 @@ export class RemoteDefender extends Creep {
         return true
     }
 
-    preTickManager(): void {
+    initRun(): void {
         if (!this.findRemote()) return
 
         const role = this.role as 'remoteDefender'
@@ -74,7 +74,7 @@ export class RemoteDefender extends Creep {
 
         // Get remotes by their efficacy
 
-        const remoteNamesByEfficacy = creep.commune.remoteNamesBySourceEfficacy
+        const remoteNamesByEfficacy = creep.commune.roomManager.remoteNamesByEfficacy
 
         let roomMemory
 
@@ -109,12 +109,12 @@ export class RemoteDefender extends Creep {
     advancedAttackEnemies?(): boolean {
         const { room } = this
 
-        const enemyAttackers = room.enemyAttackers
+        const enemyAttackers = room.roomManager.enemyAttackers
 
         // If there are none
 
         if (!enemyAttackers.length) {
-            const enemyCreeps = room.enemyCreeps
+            const enemyCreeps = room.roomManager.notMyCreeps.enemy
 
             if (!enemyCreeps.length) {
                 return this.aggressiveHeal()
@@ -286,7 +286,7 @@ export class RemoteDefender extends Creep {
                     typeWeights: {
                         [RoomTypes.enemy]: Infinity,
                         [RoomTypes.ally]: Infinity,
-                        [RoomTypes.keeper]: Infinity,
+                        [RoomTypes.sourceKeeper]: Infinity,
                         [RoomTypes.enemyRemote]: Infinity,
                         [RoomTypes.allyRemote]: Infinity,
                     },

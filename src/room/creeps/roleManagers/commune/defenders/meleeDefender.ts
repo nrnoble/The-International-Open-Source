@@ -3,11 +3,11 @@ import {
     customColors,
     CreepMemoryKeys,
     PlayerMemoryKeys,
+    ReservedCoordTypes,
 } from 'international/constants'
 import { playerManager } from 'international/players'
 import {
     areCoordsEqual,
-    customLog,
     findClosestObject,
     findClosestObjectEuc,
     findFurthestObjectEuc,
@@ -19,18 +19,25 @@ import {
     randomVal,
     getRangeEuc,
     findWeightedRangeFromExit,
-} from 'international/utils'
+} from 'utils/utils'
 import { packCoord } from 'other/codec'
 
 export class MeleeDefender extends Creep {
-    preTickManager() {
+    update() {
+        const packedCoord = Memory.creeps[this.name][CreepMemoryKeys.packedCoord]
+        if (packedCoord) {
+            this.room.roomManager.reserveCoord(packedCoord, ReservedCoordTypes.necessary)
+        }
+    }
+
+    initRun() {
         if (this.spawning) return
 
         const { room } = this
 
         room.attackingDefenderIDs.add(this.id)
 
-        for (const enemyCreep of this.room.unprotectedEnemyCreeps) {
+        for (const enemyCreep of this.room.roomManager.unprotectedEnemyCreeps) {
             const range = getRange(this.pos, enemyCreep.pos)
             if (range > 1) continue
 
@@ -79,10 +86,10 @@ export class MeleeDefender extends Creep {
 
         // Get enemyAttackers in the room, informing false if there are none
 
-        let enemyCreeps = room.enemyAttackers
+        let enemyCreeps = room.roomManager.enemyAttackers
 
         if (!enemyCreeps.length) {
-            enemyCreeps = room.enemyCreeps
+            enemyCreeps = room.roomManager.notMyCreeps.enemy
 
             if (!enemyCreeps.length) return
 
@@ -90,7 +97,7 @@ export class MeleeDefender extends Creep {
             return
         }
 
-        if (!room.enemyDamageThreat || room.controller.safeMode) {
+        if (!room.roomManager.enemyDamageThreat || room.controller.safeMode) {
             this.defendWithoutRamparts(enemyCreeps)
             return
         }
@@ -103,7 +110,7 @@ export class MeleeDefender extends Creep {
 
         const enemyCreep =
             findClosestObject(this.pos, enemyCreeps) ||
-            findClosestObject(this.pos, this.room.enemyCreeps)
+            findClosestObject(this.pos, this.room.roomManager.notMyCreeps.enemy)
 
         if (global.settings.roomVisuals)
             this.room.visual.line(this.pos, enemyCreep.pos, {
@@ -138,7 +145,7 @@ export class MeleeDefender extends Creep {
 
         const currentRampart = findObjectWithID(creepMemory[CreepMemoryKeys.rampartTarget])
 
-        const enemyAttackers = room.enemyAttackers
+        const enemyAttackers = room.roomManager.enemyAttackers
 
         let bestScore = Infinity
         let bestRampart: StructureRampart | undefined
@@ -187,7 +194,7 @@ export class MeleeDefender extends Creep {
     defendWithRampart?() {
         const { room } = this
 
-        const enemyCreeps = room.enemyAttackers
+        const enemyCreeps = room.roomManager.enemyAttackers
 
         const rampart = this.findRampart()
         if (!rampart) return this.defendWithoutRamparts(enemyCreeps)

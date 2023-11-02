@@ -1,16 +1,10 @@
 import {
     CPUMaxPerTick,
     defaultRoadPlanningPlainCost,
-    EXIT,
     maxRampartGroupSize,
     customColors,
-    NORMAL,
-    PROTECTED,
-    roadUpkeepCost,
     roomDimensions,
     stamps,
-    TO_EXIT,
-    UNWALKABLE,
     Result,
     cardinalOffsets,
     adjacentOffsets,
@@ -25,7 +19,6 @@ import {
 import {
     areCoordsEqual,
     createPosMap,
-    customLog,
     findAdjacentCoordsToCoord,
     findAdjacentCoordsToXY,
     findAvgBetweenCoords,
@@ -48,7 +41,7 @@ import {
     forCoordsAroundRange,
     randomIntRange,
     sortBy,
-} from 'international/utils'
+} from 'utils/utils'
 import { collectiveManager } from 'international/collective'
 import {
     packCoord,
@@ -164,6 +157,7 @@ export class CommunePlanner {
     recording: boolean
     markSourcesAvoid: boolean
     finishedTowerPaths: boolean
+    planConfiged: boolean
 
     //
 
@@ -253,13 +247,13 @@ export class CommunePlanner {
         // Initial configuration
 
         if (!this.terrainCoords) {
-            this.terrainCoords = collectiveManager.getTerrainCoords(this.room.name)
             this.planAttempts = []
+            this.terrainCoords = collectiveManager.getTerrainBinary(this.room.name)
         }
 
         // Plan attempt / configuration
 
-        if (!this.baseCoords) {
+        if (!this.planConfiged) {
             this.baseCoords = new Uint8Array(this.terrainCoords)
             this.roadCoords = new Uint8Array(this.terrainCoords)
             this.rampartCoords = new Uint8Array(2500)
@@ -288,21 +282,8 @@ export class CommunePlanner {
             }
 
             this.score = 0
+            this.planConfiged = true
         }
-        /*
-        this.setBasePlansXY(24, 24, STRUCTURE_CONTAINER, 2)
-        this.setBasePlansXY(25, 25, STRUCTURE_CONTAINER, 2)
-        this.setBasePlansXY(25, 25, STRUCTURE_LINK, 5)
-        customLog('PLAN 1', JSON.stringify(this.basePlans.map))
-
-        const packedPlans = this.basePlans.pack()
-        customLog('PACKED', packedPlans)
-
-        const unpacked = BasePlans.unpack(packedPlans)
-        customLog('UNPACKED', JSON.stringify(unpacked.map))
-        delete this.baseCoords
-        return Result.noAction
- */
 
         this.avoidSources()
         this.avoidMineral()
@@ -485,7 +466,7 @@ export class CommunePlanner {
         }
     }
     private recordExits() {
-        for (const packedCoord of this.room.exitCoords) {
+        for (const packedCoord of this.room.roomManager.exitCoords) {
             const coord = unpackCoord(packedCoord)
             this.exitCoords.push(coord)
             forAdjacentCoords(coord, adjCoord => {
@@ -691,7 +672,7 @@ export class CommunePlanner {
         visitedCoords = new Set()
         groupIndex = 0
 
-        for (const packedCoord of this.room.exitCoords) {
+        for (const packedCoord of this.room.roomManager.exitCoords) {
             const exitCoord = unpackCoord(packedCoord)
             if (visitedCoords.has(packedCoord)) continue
 
@@ -958,8 +939,10 @@ export class CommunePlanner {
                 }).length,
         )
 
+        // re-allow some building around the controller while respecting existing disallowed tiles
         for (const coord of findCoordsInRange(this.room.controller.pos, 2)) {
             const packedCoord = packAsNum(coord)
+            if (this.baseCoords[packedCoord] === 255) continue
             this.baseCoords[packedCoord] = this.terrainCoords[packedCoord]
         }
 
@@ -1026,7 +1009,6 @@ export class CommunePlanner {
             if (!closestHarvestPos) {
                 console.log(sourceHarvestPositions)
                 throw Error('no closest harvest pos ' + this.room.name)
-                return
             }
 
             this.setBasePlansXY(closestHarvestPos.x, closestHarvestPos.y, STRUCTURE_CONTAINER, 3)
@@ -1243,7 +1225,7 @@ export class CommunePlanner {
             }
         }
 
-        sourceLinkCoords.reverse()
+        /* sourceLinkCoords.reverse() */
         for (const coord of sourceLinkCoords) {
             this.setBasePlansXY(coord.x, coord.y, STRUCTURE_LINK)
         }
@@ -1776,7 +1758,7 @@ export class CommunePlanner {
                     if (visitedCoords[packAsNum(coord2)] === 1) continue
                     visitedCoords[packAsNum(coord2)] = 1
 
-                    if (this.room.exitCoords.has(packCoord(coord2))) return true
+                    if (this.room.roomManager.exitCoords.has(packCoord(coord2))) return true
 
                     if (this.terrainCoords[packAsNum(coord2)] === 255) continue
 
@@ -2088,7 +2070,7 @@ export class CommunePlanner {
                         y: stampAnchor.y - coord.y + stampAnchor.y,
                     }
 
-                for (i = 0; i, structureCoords.length; i++) {
+                for (i = 0; i < structureCoords.length; i++) {
                     if (areCoordsEqual(coord, structureCoords[i])) break
                 }
 
@@ -3167,6 +3149,8 @@ export class CommunePlanner {
                 for (let rcl = data.minRCL - 1; rcl < 8; rcl += 1) {
                     this.roadQuota[rcl] += 1
                 }
+
+                break
             }
         }
     }
@@ -3252,6 +3236,7 @@ export class CommunePlanner {
         delete this.towerAttemptIndex
         delete this.RCLPlannedStructureTypes
 
+        delete this.planConfiged
         delete this.plannedGridCoords
         delete this.finishedGrid
         delete this.generalShielded

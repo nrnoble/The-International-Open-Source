@@ -6,7 +6,6 @@ import {
     RoomTypes,
 } from 'international/constants'
 import {
-    customLog,
     findCarryPartsRequired,
     findObjectWithID,
     getRangeXY,
@@ -14,7 +13,7 @@ import {
     randomTick,
     scalePriority,
     areCoordsEqual,
-} from 'international/utils'
+} from 'utils/utils'
 import { packCoord, reversePosList, unpackPosAt } from 'other/codec'
 import { RemoteHauler } from './remoteHauler'
 import { indexOf } from 'lodash'
@@ -38,7 +37,7 @@ export class RemoteBuilder extends Creep {
         return true
     }
 
-    preTickManager(): void {
+    initRun(): void {
         if (randomTick() && !this.getActiveBodyparts(MOVE)) this.suicide()
 
         if (!this.findRemote()) return
@@ -75,11 +74,13 @@ export class RemoteBuilder extends Creep {
     findRemote?() {
         if (this.hasValidRemote()) return true
 
-        for (const remoteInfo of this.commune.remoteSourceIndexesByEfficacy) {
+        for (const remoteInfo of this.commune.roomManager.remoteSourceIndexesByEfficacy) {
             const splitRemoteInfo = remoteInfo.split(' ')
             const remoteName = splitRemoteInfo[0]
-            const remoteMemory = Memory.rooms[remoteName]
 
+            const remoteMemory = Memory.rooms[remoteName]
+            if (remoteMemory[RoomMemoryKeys.type] !== RoomTypes.remote) continue
+            if (remoteMemory[RoomMemoryKeys.commune] !== this.commune.name) continue
             if (remoteMemory[RoomMemoryKeys.remoteBuilder] <= 0) continue
 
             this.assignRemote(remoteName)
@@ -170,7 +171,7 @@ export class RemoteBuilder extends Creep {
                 typeWeights: {
                     [RoomTypes.enemy]: Infinity,
                     [RoomTypes.ally]: Infinity,
-                    [RoomTypes.keeper]: Infinity,
+                    [RoomTypes.sourceKeeper]: Infinity,
                     [RoomTypes.enemyRemote]: Infinity,
                     [RoomTypes.allyRemote]: Infinity,
                 },

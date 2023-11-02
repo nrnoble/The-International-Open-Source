@@ -5,10 +5,10 @@ import {
     RoomTypes,
     customColors,
 } from 'international/constants'
-import { advancedFindDistance, customLog } from 'international/utils'
+import { advancedFindDistance, randomTick } from 'utils/utils'
 import { collectiveManager } from 'international/collective'
 import { CommuneManager } from './commune'
-import { updateStat } from 'international/statsManager'
+import { statsManager } from 'international/statsManager'
 
 export class WorkRequestManager {
     communeManager: CommuneManager
@@ -41,10 +41,6 @@ export class WorkRequestManager {
         const requestName = room.memory[RoomMemoryKeys.workRequest]
         if (!requestName) return
 
-        // If CPU logging is enabled, get the CPU used at the start
-
-        if (global.settings.CPULogging === true) var managerCPUStart = Game.cpu.getUsed()
-
         const request = Memory.workRequests[requestName]
 
         // If the workRequest doesn't exist anymore somehow, stop trying to do anything with it
@@ -70,6 +66,7 @@ export class WorkRequestManager {
         // The room is closed or is now a respawn or novice zone
 
         if (
+            randomTick(20) &&
             Game.map.getRoomStatus(requestName).status !== Game.map.getRoomStatus(room.name).status
         ) {
             this.delete()
@@ -134,7 +131,7 @@ export class WorkRequestManager {
         if (!requestRoom.controller.safeMode) {
             // Increase the defenderNeed according to the enemy attackers' combined strength
 
-            for (const enemyCreep of requestRoom.enemyAttackers) {
+            for (const enemyCreep of requestRoom.roomManager.enemyAttackers) {
                 if (enemyCreep.owner.username === 'Invader') continue
 
                 request[WorkRequestKeys.minDamage] += enemyCreep.combatStrength.heal
@@ -143,25 +140,13 @@ export class WorkRequestManager {
 
             // Decrease the defenderNeed according to ally combined strength
 
-            for (const allyCreep of requestRoom.allyCreeps) {
+            for (const allyCreep of requestRoom.roomManager.notMyCreeps.ally.ally) {
                 request[WorkRequestKeys.minDamage] -= allyCreep.combatStrength.heal
                 request[WorkRequestKeys.minHeal] -= allyCreep.combatStrength.ranged
             }
 
             if (request[WorkRequestKeys.minDamage] > 0 || request[WorkRequestKeys.minHeal] > 0) this.abandonRemote()
         } */
-
-        // If CPU logging is enabled, log the CPU used by this manager
-
-        if (global.settings.CPULogging === true) {
-            const cpuUsed = Game.cpu.getUsed() - managerCPUStart
-            customLog('Claim Request Manager', cpuUsed.toFixed(2), {
-                textColor: customColors.white,
-                bgColor: customColors.lightBlue,
-            })
-            const statName: RoomCommuneStatNames = 'clrmcu'
-            updateStat(room.name, statName, cpuUsed)
-        }
     }
 
     private stopResponse(deleteCombat?: boolean) {

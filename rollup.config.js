@@ -2,7 +2,7 @@ import typescript from 'rollup-plugin-typescript2'
 import resolve from '@rollup/plugin-node-resolve'
 import commonjs from '@rollup/plugin-commonjs';
 import clear from 'rollup-plugin-clear'
-import screeps from 'rollup-plugin-screeps'
+import screeps from 'rollup-plugin-screeps-world'
 import copy from 'rollup-plugin-copy';
 import { terser } from 'rollup-plugin-terser'
 import yaml from 'yaml'
@@ -27,10 +27,10 @@ if (!dest) {
 const shouldUglify = config && config.uglify
 const ignoreWarningTypes = new Set([
     'Circular dependency',
-    "Use of eval is strongly discouraged"
 ])
 
 export default {
+    inlineDynamicImports: true,
     input: 'src/main.ts',
     output: {
         file: 'dist/main.js',
@@ -48,11 +48,13 @@ export default {
         clear({ targets: ['dist'] }),
         copy({
           targets: [
-            { src: 'wasm/pkg/commiebot_wasm_bg.wasm', dest: 'dist' }
+            { src: 'src/wasm/pkg/commiebot_wasm_bg.wasm', dest: 'dist' },
           ]
         }),
         resolve(),
-        commonjs(),
+        commonjs({
+            ignoreTryCatch: false
+        }),
         shouldUglify && terser(),
         typescript({ tsconfig: './tsconfig.json' }),
         screeps({ config: config, dryRun: !config }),

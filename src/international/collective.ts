@@ -1,12 +1,13 @@
+import { Sleepable } from 'utils/Sleepable'
 import {
     createPosMap,
-    customLog,
     getAvgPrice,
     packXYAsNum,
+    randomIntRange,
     randomRange,
     randomTick,
     roundTo,
-} from './utils'
+} from '../utils/utils'
 
 import {
     cacheAmountModifier,
@@ -17,12 +18,13 @@ import {
     roomDimensions,
     RoomMemoryKeys,
     minerals,
+    PlayerMemoryKeys,
 } from './constants'
 
 /**
  * Handles inter room and non-room matters
  */
-export class CollectiveManager {
+export class CollectiveManager extends Sleepable {
     /**
      * Antifa creeps by combat request name, then by role with an array of creep names
      */
@@ -43,20 +45,38 @@ export class CollectiveManager {
     terminalCommunes: string[]
 
     /**
-     * The aggregate number of each mineral in our communes
+     * The aggregate number of each mineral nodes we have access to
      */
-    mineralCommunes: Partial<{ [key in MineralConstant]: number }>
+    mineralNodes: Partial<{ [key in MineralConstant]: number }>
 
     /**
      * The name of the room that is safemoded, if there is one
      */
     safemodedCommuneName: string | undefined
+    /**
+     * An intra-tick collection of commands we wish to issue
+     */
+    myCommands: any[]
+    /**
+     * Terrain binaries of wall or not wall for rooms
+     */
+    terrainBinaries: { [roomName: string]: Uint8Array } = {}
+    constructionSiteCount = 0
+    creepCount: number
+    powerCreepCount: number
+    /**
+     * A string to console log as rich text
+     */
+    logs = ''
+    /**
+     * Room names that have controllers we own
+     */
+    communes: Set<string>
 
     /**
      * Updates values to be present for this tick
      */
     update() {
-        delete this.safemodedCommuneName
         this.creepsByCombatRequest = {}
         this.creepsByHaulRequest = {}
         this.unspawnedPowerCreepNames = []
@@ -66,24 +86,31 @@ export class CollectiveManager {
         this.tickID = 0
         this.customCreepIDs = []
         this.customCreepIDIndex = 0
-        this.mineralCommunes = {}
+        this.mineralNodes = {}
         for (const mineralType of minerals) {
-            this.mineralCommunes[mineralType] = 0
+            this.mineralNodes[mineralType] = 0
         }
+        this.myCommands = []
+        this.logs = ''
+        this.creepCount = 0
+        this.powerCreepCount = 0
+        this.communes = new Set()
 
-        delete this._myOrders
-        delete this._orders
-        delete this._myOrdersCount
-        delete this._workRequestsByScore
-        delete this._defaultMinCacheAmount
-        delete this.internationalDataVisuals
+        // delete
 
-        if (randomTick()) {
-            delete this._funnelOrder
-            delete this._minCredits
-            delete this._resourcesInStoringStructures
-            delete this._maxCSitesPerRoom
-        }
+        this.safemodedCommuneName = undefined
+        this._workRequestsByScore = undefined
+        this._defaultMinCacheAmount = undefined
+        this.internationalDataVisuals = undefined
+
+        if (this.isSleepingResponsive()) return
+
+        // delete
+
+        this._funnelOrder = undefined
+        this._minCredits = undefined
+        this._resourcesInStoringStructures = undefined
+        this._maxCSitesPerRoom = undefined
     }
 
     newCustomCreepID() {
@@ -104,119 +131,6 @@ export class CollectiveManager {
         return this.customCreepIDIndex - 1
     }
 
-    /**
-     * Removes inactive orders if the bot is reaching max orders
-     */
-    orderManager() {
-        // If there is sufficiently few orders
-
-        if (MARKET_MAX_ORDERS * 0.8 > this.myOrdersCount) return
-
-        // Loop through my orders
-
-        for (const ID in Game.market.orders) {
-            // If the order is inactive (it likely has no remaining resources), delete it
-
-            if (!Game.market.orders[ID].active) Game.market.cancelOrder(ID)
-        }
-    }
-
-    /**
-     * Finds the cheapest sell order
-     */
-    getSellOrder(resourceType: MarketResourceConstant, maxPrice = getAvgPrice(resourceType) * 1.2) {
-        const orders = this.orders.sell?.[resourceType] || []
-
-        let bestOrder: Order
-
-        for (const order of orders) {
-            if (order.price >= maxPrice) continue
-
-            if (order.price < (bestOrder ? bestOrder.price : Infinity)) bestOrder = order
-        }
-
-        return bestOrder
-    }
-
-    /**
-     * Finds the most expensive buy order
-     */
-    getBuyOrder(resourceType: MarketResourceConstant, minPrice = getAvgPrice(resourceType) * 0.8) {
-        const orders = this.orders.buy?.[resourceType] || []
-
-        let bestOrder: Order
-
-        for (const order of orders) {
-            if (order.price <= minPrice) continue
-
-            if (order.price > (bestOrder ? bestOrder.price : 0)) bestOrder = order
-        }
-
-        return bestOrder
-    }
-
-    /**
-     * Find the highest order and sell pixels to it
-     */
-    advancedSellPixels() {
-        if (!global.settings.pixelSelling) return
-
-        if (Game.resources[PIXEL] === 0) return
-
-        const avgPrice = getAvgPrice(PIXEL, 7)
-
-        const minPrice = avgPrice * 0.8
-        /*
-        customLog('minPixelPrice', minPrice)
-        customLog('avgPixelPrice', avgPrice)
- */
-        const buyOrder = this.getBuyOrder(PIXEL, minPrice)
-
-        if (buyOrder) {
-            Game.market.deal(buyOrder.id, Math.min(buyOrder.amount, Game.resources[PIXEL]))
-            return
-        }
-
-        const myPixelOrder = _.find(
-            Game.market.orders,
-            o => o.type == 'sell' && o.resourceType == PIXEL,
-        )
-
-        const sellOrder = this.getSellOrder(PIXEL, Infinity)
-        let price: number
-
-        if (sellOrder.price < avgPrice) {
-            price = avgPrice
-        } else {
-            price = sellOrder.price
-        }
-
-        if (myPixelOrder) {
-            if (Game.time % 100 == 0) {
-                if (myPixelOrder.remainingAmount < Game.resources[PIXEL]) {
-                    Game.market.extendOrder(
-                        myPixelOrder.id,
-                        Game.resources[PIXEL] - myPixelOrder.remainingAmount,
-                    )
-                    return
-                } else {
-                    if (myPixelOrder.price == price) return
-                    Game.market.changeOrderPrice(myPixelOrder.id, price - 0.001)
-                    return
-                }
-            } else {
-                return
-            }
-        }
-
-        Game.market.createOrder({
-            type: ORDER_SELL,
-            resourceType: PIXEL,
-            price: price - 0.001,
-            totalAmount: Game.resources[PIXEL],
-        })
-    }
-
     advancedGeneratePixel() {
         if (!global.settings.pixelGeneration) return
 
@@ -233,23 +147,24 @@ export class CollectiveManager {
         Game.cpu.generatePixel()
     }
 
-    getTerrainCoords(roomName: string) {
-        if (!global.terrainCoords) global.terrainCoords = {}
+    /**
+     * Provides a cached binary of wall or not wall terrain
+     */
+    getTerrainBinary(roomName: string) {
+        if (this.terrainBinaries[roomName]) return this.terrainBinaries[roomName]
 
-        if (global.terrainCoords[roomName]) return global.terrainCoords[roomName]
-
-        global.terrainCoords[roomName] = new Uint8Array(2500)
+        this.terrainBinaries[roomName] = new Uint8Array(2500)
 
         const terrain = Game.map.getRoomTerrain(roomName)
 
         for (let x = 0; x < roomDimensions; x += 1) {
             for (let y = 0; y < roomDimensions; y += 1) {
-                global.terrainCoords[roomName][packXYAsNum(x, y)] =
+                this.terrainBinaries[roomName][packXYAsNum(x, y)] =
                     terrain.get(x, y) === TERRAIN_MASK_WALL ? 255 : 0
             }
         }
 
-        return global.terrainCoords[roomName]
+        return this.terrainBinaries[roomName]
     }
 
     newTickID() {
@@ -261,117 +176,7 @@ export class CollectiveManager {
     get minCredits() {
         if (this._minCredits !== undefined) return this._minCredits
 
-        return (this._minCredits = global.communes.size * 10000)
-    }
-
-    /**
-     * My outgoing orders organized by room, order type and resourceType
-     */
-    _myOrders: {
-        [roomName: string]: Partial<
-            Record<string, Partial<Record<MarketResourceConstant, Order[]>>>
-        >
-    }
-
-    /**
-     * Gets my outgoing orders organized by room, order type and resourceType
-     */
-    get myOrders() {
-        // If _myOrders are already defined, inform them
-
-        if (this._myOrders) return this._myOrders
-
-        this._myOrders = {}
-
-        // Loop through each orderID in the market's orders
-
-        for (const orderID in Game.market.orders) {
-            // Get the order using its ID
-
-            const order = Game.market.orders[orderID]
-
-            // If the order is inactive (it likely has 0 remaining amount)
-
-            if (order.remainingAmount == 0) continue
-
-            // If there is foundation for this structure, create it
-
-            if (!this._myOrders[order.roomName]) {
-                this._myOrders[order.roomName] = {
-                    sell: {},
-                    buy: {},
-                }
-            }
-
-            // If there is no array for this structure, create one
-
-            if (!this._myOrders[order.roomName][order.type][order.resourceType])
-                this._myOrders[order.roomName][order.type][order.resourceType] = []
-
-            // Add the order to the structure's array
-
-            this._myOrders[order.roomName][order.type][order.resourceType].push(order)
-        }
-
-        return this._myOrders
-    }
-
-    /**
-     * Existing other-player orders ordered by order type and resourceType
-     */
-    _orders?: Partial<Record<string, Partial<Record<MarketResourceConstant, Order[]>>>>
-
-    /**
-     * Gets existing other-player orders ordered by order type and resourceType
-     */
-    get orders() {
-        // If _orders are already defined, inform them
-
-        /* if (this._orders) return this._orders */
-
-        this._orders = {
-            buy: {},
-            sell: {},
-        }
-
-        // Get the market's order and loop through them
-
-        const orders = Game.market.getAllOrders()
-
-        for (const orderID in orders) {
-            // Get the order using its ID
-
-            const order = orders[orderID]
-
-            if (!this._orders[order.type][order.resourceType]) {
-                this._orders[order.type][order.resourceType] = [order]
-                continue
-            }
-
-            // Assign the order to a resource-ordered location
-
-            this._orders[order.type][order.resourceType].push(order)
-        }
-
-        return this._orders
-    }
-
-    /**
-     * The number of orders owned by me
-     */
-    _myOrdersCount: number
-
-    /**
-     * Gets the number of orders owned by me
-     */
-    get myOrdersCount() {
-        // If _myOrdersCount are already defined, inform them
-
-        if (this._myOrdersCount) return this._myOrdersCount
-
-        // Inform and set the number of my orders
-
-        return (this._myOrdersCount = Object.keys(Game.market.orders).length)
+        return (this._minCredits = collectiveManager.communes.size * 10000)
     }
 
     _workRequestsByScore: (string | undefined)[]
@@ -401,17 +206,6 @@ export class CollectiveManager {
             Math.floor(Math.pow(avgCPUUsagePercent * 10, 2.2)) + 1)
     }
 
-    _marketIsFunctional: number
-
-    /**
-     * Determines if there is functional based on history
-     */
-    get marketIsFunctional() {
-        if (this._marketIsFunctional !== undefined) return this._marketIsFunctional
-
-        return (this._marketIsFunctional = Game.market.getHistory(RESOURCE_ENERGY).length)
-    }
-
     _maxCommunes: number
     get maxCommunes() {
         return (this._maxCommunes = Math.round(Game.cpu.limit / 10))
@@ -421,8 +215,8 @@ export class CollectiveManager {
     get avgCommunesPerMineral() {
         let sum = 0
 
-        for (const mineralType in this.mineralCommunes) {
-            sum += this.mineralCommunes[mineralType as MineralConstant]
+        for (const mineralType in this.mineralNodes) {
+            sum += this.mineralNodes[mineralType as MineralConstant]
         }
 
         const avg = roundTo(sum / minerals.length, 2)
@@ -453,7 +247,7 @@ export class CollectiveManager {
         const communesByLevel: { [level: string]: [string, number][] } = {}
         for (let i = 6; i < 8; i++) communesByLevel[i] = []
 
-        for (const roomName of global.communes) {
+        for (const roomName of collectiveManager.communes) {
             const room = Game.rooms[roomName]
             if (!room.terminal) continue
 
@@ -485,9 +279,9 @@ export class CollectiveManager {
 
         this._resourcesInStoringStructures = {}
 
-        for (const roomName of global.communes) {
+        for (const roomName of collectiveManager.communes) {
             const room = Game.rooms[roomName]
-            const resources = room.resourcesInStoringStructures
+            const resources = room.roomManager.resourcesInStoringStructures
 
             for (const key in resources) {
                 const resource = key as unknown as ResourceConstant
@@ -502,10 +296,13 @@ export class CollectiveManager {
     }
 
     _maxCSitesPerRoom: number
+    /**
+     * The largest amount of construction sites we can try to have in a room
+     */
     get maxCSitesPerRoom() {
         if (this._maxCSitesPerRoom) return this._maxCSitesPerRoom
 
-        return Math.max(Math.min(MAX_CONSTRUCTION_SITES / global.communes.size, 20), 3)
+        return Math.max(Math.min(MAX_CONSTRUCTION_SITES / collectiveManager.communes.size, 20), 3)
     }
 }
 

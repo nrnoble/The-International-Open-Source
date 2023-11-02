@@ -6,7 +6,8 @@ import {
     roomDimensions,
     towerPowers,
 } from 'international/constants'
-import { customLog, getRangeXY, getRange, isXYExit, isExit } from 'international/utils'
+import { customLog } from 'utils/logging'
+import { getRangeXY, getRange, isXYExit, isExit } from 'utils/utils'
 import { profiler } from 'other/profiler'
 import { towerFunctions } from 'room/commune/towers'
 import { creepUtils } from './creepUtils'

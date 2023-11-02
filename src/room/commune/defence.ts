@@ -6,15 +6,15 @@ import {
     impassibleStructureTypesSet,
     ourImpassibleStructuresSet,
     PlayerMemoryKeys,
+    Result,
     roomDimensions,
     RoomMemoryKeys,
     safemodeTargets,
 } from 'international/constants'
 import { playerManager } from 'international/players'
-import { allyRequestManager } from 'international/AllyRequests'
-import { updateStat } from 'international/statsManager'
+import { simpleAllies } from 'international/simpleAllies'
+import { statsManager } from 'international/statsManager'
 import {
-    customLog,
     findObjectWithID,
     findWeightedRangeFromExit,
     getRange,
@@ -23,12 +23,13 @@ import {
     randomIntRange,
     randomRange,
     randomTick,
-} from 'international/utils'
+} from 'utils/utils'
 import { packCoord } from 'other/codec'
 import { CommuneManager } from './commune'
 import { collectiveManager } from 'international/collective'
 import { roomUtils } from 'room/roomUtils'
 import { RampartPlans } from 'room/construction/rampartPlans'
+import { customLog, LogTypes } from 'utils/logging'
 
 export class DefenceManager {
     communeManager: CommuneManager
@@ -41,11 +42,7 @@ export class DefenceManager {
     }
 
     run() {
-        // If CPU logging is enabled, get the CPU used at the start
-
-        if (global.settings.CPULogging === true) var managerCPUStart = Game.cpu.getUsed()
-
-        if (!this.communeManager.room.enemyCreeps.length) {
+        if (!this.communeManager.room.roomManager.notMyCreeps.enemy.length) {
             this.considerRampartsPublic()
             return
         }
@@ -55,23 +52,11 @@ export class DefenceManager {
         this.makeRampartsPrivate()
         this.advancedActivateSafeMode()
 
-        if (!this.communeManager.room.enemyAttackers.length) return
+        if (!this.communeManager.room.roomManager.enemyAttackers.length) return
 
         // There are at least enemyAttackers
 
         this.assignDefenceTargets()
-
-        // If CPU logging is enabled, log the CPU used by this manager
-
-        if (global.settings.CPULogging === true) {
-            const cpuUsed = Game.cpu.getUsed() - managerCPUStart
-            customLog('Defense Manager', cpuUsed.toFixed(2), {
-                textColor: customColors.white,
-                bgColor: customColors.lightBlue,
-            })
-            const statName: RoomCommuneStatNames = 'dmcu'
-            updateStat(this.communeManager.room.name, statName, cpuUsed)
-        }
     }
 
     private shouldSafeMode() {
@@ -95,11 +80,11 @@ export class DefenceManager {
 
         // Filter attackers that are not invaders. If there are none, stop
 
-        const nonInvaderAttackers = room.enemyAttackers.filter(
-            enemyCreep => !enemyCreep.isOnExit && enemyCreep.owner.username /* !== 'Invader' */,
+        const nonInvaderAttackers = room.roomManager.enemyAttackers.filter(
+            enemyCreep => !enemyCreep.isOnExit && enemyCreep.owner.username !== 'Invader',
         )
-
         if (!nonInvaderAttackers.length) return false
+
         if (!this.isControllerSafe()) return true
         if (!this.isBaseSafe()) return true
 
@@ -142,13 +127,19 @@ export class DefenceManager {
         return false */
     }
 
+    private isSafe() {}
+
     private isBaseSafe() {
         const { room } = this.communeManager
+
+        const anchor = room.roomManager.anchor
+        if (!anchor) {
+            throw Error('no anchor')
+        }
+
         const terrain = Game.map.getRoomTerrain(room.name)
-        const rampartPlans = RampartPlans.unpack(
-            Memory.rooms[room.name][RoomMemoryKeys.rampartPlans],
-        )
-        const enemyCoord = roomUtils.floodFillFor(room.name, [room.controller.pos], coord => {
+        const rampartPlans = this.communeManager.room.roomManager.rampartPlans
+        const enemyCoord = roomUtils.floodFillFor(room.name, [anchor], coord => {
             // Ignore terrain that protects us
             if (terrain.get(coord.x, coord.y) === TERRAIN_MASK_WALL) return false
 
@@ -172,7 +163,7 @@ export class DefenceManager {
                 enemyCreep.combatStrength.melee ||
                 enemyCreep.combatStrength.dismantle
             )
-                return 'stop'
+                return Result.stop
 
             return true
         })
@@ -187,32 +178,36 @@ export class DefenceManager {
     private isControllerSafe() {
         const { room } = this.communeManager
         const terrain = Game.map.getRoomTerrain(room.name)
-        const enemyCoord = roomUtils.floodFillFor(room.name, [room.controller.pos], coord => {
-            // See if we should even consider the coord
+        const enemyCoord = roomUtils.floodFillFor(
+            room.name,
+            [room.controller.pos],
+            (coord, packedCoord, depth) => {
+                // See if we should even consider the coord
 
-            // Ignore terrain that protects us
-            if (terrain.get(coord.x, coord.y) === TERRAIN_MASK_WALL) return false
+                // Ignore terrain that protects us
+                if (terrain.get(coord.x, coord.y) === TERRAIN_MASK_WALL) return false
 
-            // Don't go out of range 2 from controller
-            if (getRange(room.controller.pos, coord) > 2) return false
+                // Don't go out of range 2 from controller
+                if (depth > 2) return false
 
-            // Ignore structures that protect us
-            if (room.coordHasStructureTypes(coord, ourImpassibleStructuresSet)) return false
+                // Ignore structures that protect us
+                if (room.coordHasStructureTypes(coord, ourImpassibleStructuresSet)) return false
 
-            // Past this point we should always add this coord to the next generation
+                // Past this point we should always add this coord to the next generation
 
-            // See if there is an enemy creep
-            const enemyCreepID = room.roomManager.enemyCreepPositions[packCoord(coord)]
-            if (!enemyCreepID) return true
+                // See if there is an enemy creep
+                const enemyCreepID = room.roomManager.enemyCreepPositions[packCoord(coord)]
+                if (!enemyCreepID) return true
 
-            const enemyCreep = findObjectWithID(enemyCreepID)
-            if (isAlly(enemyCreep.name)) return true
-            // We only need to protect our controller from claim creeps
-            if (enemyCreep.parts.claim) return 'stop'
+                const enemyCreep = findObjectWithID(enemyCreepID)
+                if (isAlly(enemyCreep.name)) return true
+                // We only need to protect our controller from claim creeps
+                if (!enemyCreep.parts.claim) return true
 
-            // We identified an enemy claimed near our controller!
-            return true
-        })
+                // We identified an enemy claimed near our controller!
+                return Result.stop
+            },
+        )
 
         // If there is an enemy claimer, we want to safemode
         return !enemyCoord
@@ -240,9 +235,10 @@ export class DefenceManager {
         if (!global.settings.publicRamparts) return
 
         const { room } = this.communeManager
+        const roomMemory = Memory.rooms[room.name]
 
         // Wait some pseudo-random time before publicizing ramparts
-        if (room.memory[RoomMemoryKeys.lastAttacked] < randomIntRange(100, 150)) return
+        if (roomMemory[RoomMemoryKeys.lastAttackedBy] !== undefined && roomMemory[RoomMemoryKeys.lastAttackedBy] < randomIntRange(100, 150)) return
 
         // Publicize at most 10 ramparts per tick, to avoid too many intents
 
@@ -285,6 +281,10 @@ export class DefenceManager {
                 (creepB.hits / creepB.hitsMax -
                     (creepB.hits + room.defenderEnemyTargetsWithDamage.get(b)) / creepB.hitsMax)
             )
+        })
+
+        customLog('ENEMY TARGETS BY DAMAGE', defenderEnemyTargetsByDamage, {
+            type: LogTypes.warning,
         })
 
         // Attack enemies in order of most net damage members can heal
@@ -332,17 +332,24 @@ export class DefenceManager {
 
         if (!room.towerInferiority) return
 
+        const hasTowers = !!room.roomManager.structures.tower.length
+
         let onlyInvader = true
         let minDamage = 0
         let minMeleeHeal = 0
         let minRangedHeal = 0
 
-        for (const enemyCreep of room.enemyAttackers) {
-            minDamage += Math.max(enemyCreep.combatStrength.heal, Math.ceil(enemyCreep.hits / 50))
+        for (const enemyCreep of room.roomManager.enemyAttackers) {
+
+            if (enemyCreep.owner.username === 'Invader') {
+                // If we have towers, don't care about the invader
+                if (hasTowers) continue
+            }
+            else onlyInvader = false
+
+            minDamage += Math.max(enemyCreep.combatStrength.heal * 1.2, Math.ceil(enemyCreep.hits / 50))
             minMeleeHeal += enemyCreep.combatStrength.melee + enemyCreep.combatStrength.ranged
             minRangedHeal += enemyCreep.combatStrength.ranged
-
-            if (onlyInvader && enemyCreep.owner.username !== 'Invader') onlyInvader = false
         }
 
         // If we have towers and it's only invaders, we don't need a defence request
@@ -358,8 +365,10 @@ export class DefenceManager {
             [CombatRequestKeys.inactionTimerMax]: onlyInvader ? 1 : undefined,
         })
 
-        if (global.settings.allies) {
-            allyRequestManager.requestDefense(room.name, minDamage, minMeleeHeal, minRangedHeal, 1)
+        if (!global.settings.allyCommunication) return
+
+        simpleAllies.myRequests.defense[room.name] = {
+            priority: 1,
         }
     }
 
@@ -371,7 +380,7 @@ export class DefenceManager {
 
         if (!room.towerInferiority) return
 
-        for (const enemyCreep of room.enemyAttackers) {
+        for (const enemyCreep of room.roomManager.enemyAttackers) {
             let threat = 0
 
             threat += enemyCreep.combatStrength.dismantle
@@ -400,8 +409,15 @@ export class DefenceManager {
         const { room } = this.communeManager
 
         this.findPresentThreat()
-
         const roomMemory = Memory.rooms[room.name]
+
+        if (!this.presentThreat) {
+            // Reduce attack threat over time
+            if (roomMemory[RoomMemoryKeys.threatened] > 0)
+                roomMemory[RoomMemoryKeys.threatened] *= defaultDataDecay
+
+            if (roomMemory[RoomMemoryKeys.lastAttackedBy]) roomMemory[RoomMemoryKeys.lastAttackedBy] += 1
+        }
 
         roomMemory[RoomMemoryKeys.threatened] = Math.max(
             roomMemory[RoomMemoryKeys.threatened],
@@ -409,32 +425,22 @@ export class DefenceManager {
             playerManager.highestThreat / 3,
         )
 
-        if (this.presentThreat) {
-            for (const [playerName, threat] of this.threatByPlayers) {
-                let player = Memory.players[playerName]
+        for (const [playerName, threat] of this.threatByPlayers) {
+            let player = Memory.players[playerName]
 
-                if (!player) {
-                    player = playerManager.initPlayer(playerName)
-                }
-
-                player[PlayerMemoryKeys.offensiveThreat] = Math.max(
-                    threat,
-                    player[PlayerMemoryKeys.offensiveThreat],
-                )
-                player[PlayerMemoryKeys.hate] = Math.max(threat, player[PlayerMemoryKeys.hate])
-                player[PlayerMemoryKeys.lastAttacked] = 0
+            if (!player) {
+                player = playerManager.initPlayer(playerName)
             }
 
-            roomMemory[RoomMemoryKeys.lastAttacked] = 0
-            return
+            player[PlayerMemoryKeys.offensiveThreat] = Math.max(
+                threat,
+                player[PlayerMemoryKeys.offensiveThreat],
+            )
+            player[PlayerMemoryKeys.hate] = Math.max(threat, player[PlayerMemoryKeys.hate])
+            player[PlayerMemoryKeys.lastAttackedBy] = 0
         }
 
-        // There is no present threat
-
-        // Reduce attack threat over time
-        if (roomMemory[RoomMemoryKeys.threatened] > 0)
-            roomMemory[RoomMemoryKeys.threatened] *= defaultDataDecay
-
-        roomMemory[RoomMemoryKeys.lastAttacked] += 1
+        roomMemory[RoomMemoryKeys.lastAttackedBy] = 0
+        return
     }
 }

@@ -1,31 +1,17 @@
-// Imports
-
 import './settings'
 import './other/userScript/userScript'
-
-// International
-
 import './international/commands'
 import { collectiveManager } from './international/collective'
-
-// Room
-
 import { roomsManager } from 'room/rooms'
-import './room/roomAdditions'
-
 import './room/resourceAdditions'
 import './room/roomObjectFunctions'
 import './room/roomObjectAdditions'
 import './room/structureAdditions'
-
-// Creep
-
 import './room/creeps/creepAdditions'
-
-// Other
-
+import './other/profilerRegister'
 import { memHack } from 'other/memHack'
-import { customLog, findCPUOf } from 'international/utils'
+import { customLog } from 'utils/logging'
+import { findCPUOf, outOfBucket } from 'utils/utils'
 import { CPUMaxPerTick, customColors } from 'international/constants'
 import { CommuneManager } from 'room/commune/commune'
 import { initManager } from './international/init'
@@ -34,11 +20,11 @@ import { Duo } from 'room/creeps/roleManagers/antifa/duo'
 import { migrationManager } from 'international/migration'
 import { respawnManager } from './international/respawn'
 import { tickInit } from './international/tickInit'
-import { allyRequestManager } from 'international/AllyRequests'
+import { simpleAllies } from 'international/simpleAllies'
 import { creepOrganizer } from './international/creepOrganizer'
 import { powerCreepOrganizer } from 'international/powerCreepOrganizer'
 import { ErrorMapper } from 'other/ErrorMapper'
-import { StatsManager, statsManager, updateStat } from 'international/statsManager'
+import { StatsManager, statsManager } from 'international/statsManager'
 import { playerManager } from 'international/players'
 import { profiler } from 'other/profiler'
 import { SpawningStructuresManager } from 'room/commune/spawning/spawningStructures'
@@ -62,51 +48,38 @@ import { SourceManager } from 'room/commune/sourceManager'
 import { WorkRequestManager } from 'room/commune/workRequest'
 import { ConstructionManager } from 'room/construction/construction'
 import { DynamicSquad } from 'room/creeps/roleManagers/antifa/dynamicSquad'
+import { wasm } from 'other/wasmInit'
+import { requestsManager } from 'international/requests'
+import { marketOrdersManager } from 'international/marketOrders'
 
-// TextEncoder/Decoder polyfill for UTF-8 conversion
-import 'fastestsmallesttextencoderdecoder-encodeinto/EncoderDecoderTogether.min.js'
+export function originalLoop() {
 
-/*
-const wasm_module = new WebAssembly.Module(require('commiebot_wasm_bg'))
-import { initSync } from '../wasm/pkg/commiebot_wasm.js'
-const wasm = initSync(wasm_module)
-wasm.log_setup();
- */
-function originalLoop() {
+    memHack.run()
 
+    if (global.userScript) global.userScript.initialRun()
+    if (Game.flags.deactivate) return
     if (Game.cpu.bucket < CPUMaxPerTick) {
         outOfBucket()
         return
     }
 
-    memHack.run()
-
     profiler.wrap((): void => {
-
-        /* wasm.wasm_function() */
-
-        collectiveManager.update()
-        if (global.collectivizer) global.collectivizer.run()
-        if (global.userScript) global.userScript()
-
-        // If CPU logging is enabled, get the CPU used at the start
-
-        if (global.settings.CPULogging === true) var managerCPUStart = Game.cpu.getUsed()
-
-        // Run prototypes
-
         migrationManager.run()
         respawnManager.run()
         initManager.run()
-        allyRequestManager.initRun()
-        playerManager.run()
-        tickInit.run()
+
         tickInit.configGeneral()
-        statsManager.internationalPreTick()
+        statsManager.tickInit()
+        collectiveManager.update()
+        simpleAllies.initRun()
+        wasm.collaborator()
+
         roomsManager.updateRun()
-        tickInit.configWorkRequests()
-        tickInit.configCombatRequests()
-        tickInit.configHaulRequests()
+        requestsManager.run()
+
+        if (global.collectivizer) global.collectivizer.run()
+        if (global.userScript) global.userScript.run()
+        playerManager.run()
         roomsManager.initRun()
         creepOrganizer.run()
         powerCreepOrganizer.run()
@@ -114,67 +87,19 @@ function originalLoop() {
         roomPruningManager.run()
         flagManager.run()
         constructionSiteManager.run()
-        collectiveManager.orderManager()
-
-        if (global.settings.CPULogging === true) {
-            const cpuUsed = Game.cpu.getUsed() - managerCPUStart
-            customLog('International Manager', cpuUsed.toFixed(2), {
-                textColor: customColors.white,
-                bgColor: customColors.lightBlue,
-            })
-            const statName: InternationalStatNames = 'imcu'
-            updateStat('', statName, cpuUsed, true)
-        }
+        marketOrdersManager.run()
 
         roomsManager.run()
 
         mapVisualsManager.run()
+        simpleAllies.endRun()
+        statsManager.internationalEndRun()
 
         collectiveManager.advancedGeneratePixel()
-        collectiveManager.advancedSellPixels()
+        marketOrdersManager.advancedSellPixels()
 
+        if (global.userScript) global.userScript.endRun()
         endTickManager.run()
     })
 }
-
-function outOfBucket() {
-    customLog('Skipping tick due to low bucket, bucket remaining', Game.cpu.bucket, {
-        textColor: customColors.white,
-        bgColor: customColors.red,
-    })
-    console.log(
-        global.settings.logging
-            ? global.logs
-            : `Skipping tick due to low bucket, bucket remaining ${Game.cpu.bucket}`,
-    )
-}
-
 export const loop = ErrorMapper.wrapLoop(originalLoop)
-
-// Profiler decs
-
-profiler.registerClass(CommuneManager, 'CommuneManager')
-profiler.registerClass(RoomManager, 'RoomManager')
-profiler.registerClass(SpawningStructuresManager, 'SpawningStructuresManager')
-profiler.registerClass(SpawnRequestsManager, 'SpawnRequestsManager')
-profiler.registerClass(TerminalManager, 'TerminalManager')
-profiler.registerClass(LabManager, 'LabManager')
-profiler.registerClass(FactoryManager, 'FactoryManager')
-profiler.registerClass(StatsManager, 'StatsManager')
-profiler.registerClass(CommunePlanner, 'CommunePlanner')
-profiler.registerClass(ConstructionManager, 'ConstructionManager')
-profiler.registerClass(ObserverManager, 'ObserverManager')
-profiler.registerClass(RemotesManager, 'RemotesManager')
-profiler.registerClass(HaulRequestManager, 'HaulRequestManager')
-profiler.registerClass(SourceManager, 'SourceManager')
-profiler.registerClass(WorkRequestManager, 'WorkRequestManager')
-profiler.registerClass(Quad, 'Quad')
-profiler.registerClass(DynamicSquad, 'DynamicSquad')
-profiler.registerClass(Duo, 'Duo')
-profiler.registerFN(updateStat, 'updateStat')
-profiler.registerFN(originalLoop, 'loop')
-
-for (const creepClass of new Set(Object.values(creepClasses))) {
-    profiler.registerClass(creepClass, creepClass.toString().match(/ (\w+)/)[1])
-}
-profiler.registerFN(outOfBucket, 'outOfBucket')

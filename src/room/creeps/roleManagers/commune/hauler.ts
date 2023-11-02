@@ -1,5 +1,6 @@
 import { CreepMemoryKeys } from 'international/constants'
-import { customLog, findClosestObject, getRange } from 'international/utils'
+import { customLog } from 'utils/logging'
+import { findClosestObject, getRange } from 'utils/utils'
 
 export class Hauler extends Creep {
     constructor(creepID: Id<Creep>) {
@@ -7,7 +8,7 @@ export class Hauler extends Creep {
     }
 
     run?() {
-/*
+        /*
         const creepMemory = Memory.creeps[this.name]
 
         if (!creepMemory[CreepMemoryKeys.roomLogisticsRequests].length && this.needsResources()) {
@@ -18,7 +19,7 @@ export class Hauler extends Creep {
         this.passiveRenew()
         this.runRoomLogisticsRequestsAdvanced()
 
-        /* customLog('HAULER RUN', this.name) */
+        /* log('HAULER RUN', this.name) */
     }
 
     static roleManager(room: Room, creepsOfRole: string[]) {

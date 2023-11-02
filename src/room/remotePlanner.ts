@@ -1,16 +1,10 @@
 import {
     CPUMaxPerTick,
     defaultRoadPlanningPlainCost,
-    EXIT,
     maxRampartGroupSize,
     customColors,
-    NORMAL,
-    PROTECTED,
-    roadUpkeepCost,
     roomDimensions,
     stamps,
-    TO_EXIT,
-    UNWALKABLE,
     Result,
     cardinalOffsets,
     adjacentOffsets,
@@ -25,7 +19,6 @@ import {
 import {
     areCoordsEqual,
     createPosMap,
-    customLog,
     findAdjacentCoordsToCoord,
     findAdjacentCoordsToXY,
     findAvgBetweenCoords,
@@ -48,7 +41,7 @@ import {
     forCoordsAroundRange,
     randomIntRange,
     sortBy,
-} from 'international/utils'
+} from 'utils/utils'
 import { collectiveManager } from 'international/collective'
 import {
     packCoord,
@@ -267,7 +260,11 @@ export class RemotePlanner {
     }
 
     get isStartRoom() {
-        return this.room.controller.my && this.room.controller.safeMode && global.communes.size <= 1
+        return (
+            this.room.controller.my &&
+            this.room.controller.safeMode &&
+            collectiveManager.communes.size <= 1
+        )
     }
 
     preTickRun() {
@@ -295,7 +292,7 @@ export class RemotePlanner {
         // Initial configuration
 
         if (!this.terrainCoords) {
-            this.terrainCoords = collectiveManager.getTerrainCoords(this.room.name)
+            this.terrainCoords = collectiveManager.getTerrainBinary(this.room.name)
             this.planAttempts = []
         }
 
@@ -330,13 +327,13 @@ export class RemotePlanner {
         this.setBasePlansXY(24, 24, STRUCTURE_CONTAINER, 2)
         this.setBasePlansXY(25, 25, STRUCTURE_CONTAINER, 2)
         this.setBasePlansXY(25, 25, STRUCTURE_LINK, 5)
-        customLog('PLAN 1', JSON.stringify(this.basePlans.map))
+        log('PLAN 1', JSON.stringify(this.basePlans.map))
 
         const packedPlans = this.basePlans.pack()
-        customLog('PACKED', packedPlans)
+        log('PACKED', packedPlans)
 
         const unpacked = BasePlans.unpack(packedPlans)
-        customLog('UNPACKED', JSON.stringify(unpacked.map))
+        log('UNPACKED', JSON.stringify(unpacked.map))
         delete this.baseCoords
         return Result.noAction
  */
@@ -459,7 +456,7 @@ export class RemotePlanner {
         */
     }
     private recordExits() {
-        for (const packedCoord of this.room.exitCoords) {
+        for (const packedCoord of this.room.roomManager.exitCoords) {
             const coord = unpackCoord(packedCoord)
             this.exitCoords.push(coord)
             forAdjacentCoords(coord, adjCoord => {
@@ -665,7 +662,7 @@ export class RemotePlanner {
         visitedCoords = new Set()
         groupIndex = 0
 
-        for (const packedCoord of this.room.exitCoords) {
+        for (const packedCoord of this.room.roomManager.exitCoords) {
             const exitCoord = unpackCoord(packedCoord)
             if (visitedCoords.has(packedCoord)) continue
 
@@ -999,7 +996,6 @@ export class RemotePlanner {
 
             if (!closestHarvestPos) {
                 throw Error('no closest harvest pos ' + this.room.name)
-                return
             }
 
             this.setBasePlansXY(closestHarvestPos.x, closestHarvestPos.y, STRUCTURE_CONTAINER, 3)
@@ -1750,7 +1746,7 @@ export class RemotePlanner {
                     if (visitedCoords[packAsNum(coord2)] === 1) continue
                     visitedCoords[packAsNum(coord2)] = 1
 
-                    if (this.room.exitCoords.has(packCoord(coord2))) return true
+                    if (this.room.roomManager.exitCoords.has(packCoord(coord2))) return true
 
                     if (this.terrainCoords[packAsNum(coord2)] === 255) continue
 
@@ -2055,7 +2051,7 @@ export class RemotePlanner {
                         y: stampAnchor.y - coord.y + stampAnchor.y,
                     }
 
-                for (i = 0; i, structureCoords.length; i++) {
+                for (i = 0; i < structureCoords.length; i++) {
                     if (areCoordsEqual(coord, structureCoords[i])) break
                 }
 

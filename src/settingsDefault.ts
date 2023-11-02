@@ -25,16 +25,6 @@ export interface Settings {
     mapVisuals: boolean
 
     /**
-     * Wether the bot should log CPU data
-     */
-    CPULogging: boolean
-
-    /**
-     * Wether the bot save RoomStats data
-     */
-    roomStats: 0 | 1 | 2
-
-    /**
      * A list of usernames to treat as allies
      */
     allies: string[]
@@ -77,7 +67,7 @@ export interface Settings {
     /**
      * Wether the bot should try trading with its allies
      */
-    allyTrading: boolean
+    allyCommunication: boolean
 
     /**
      * Wether or not the bot should be using the market
@@ -102,7 +92,7 @@ export interface Settings {
     /**
      * The public segment number (0-99) that you and your allies are using
      */
-    simpleAlliesSegment: number
+    allySegmentID: number
     /**
      * Wether or not to send errors, if set up, to the error storer
      */
@@ -111,44 +101,43 @@ export interface Settings {
      * Wether or not to try to migrate existing structures to planned positions
      */
     structureMigration: boolean
+    /**
+     * Wether or not to generate visuals for room logistics requests
+     */
+    roomLogisticsVisuals: boolean
+    /**
+     * Wether or not to generate and display logs for debugging purposes
+     */
+    debugLogging: boolean
 }
 
 /**
  * Default global.settings. DO NOT MODIFY. Instead, include your preferences in global.settings.ts
  */
 export const defaultSettings: Settings = {
-    breakingVersion: 109,
+    breakingVersion: 113,
     roomVisuals: false,
     baseVisuals: false,
     dataVisuals: false,
     mapVisuals: false,
-    CPULogging: Game.shard.name === 'performanceServer' ? true : false,
-    roomStats: 2,
     allies: [
-        'MarvinTMB',
-        'PandaMaster',
-        'lokenwow',
-        'LittleBitBlue',
-        'DefaultO',
-        'Allorrian',
-        'Aerics',
-        'PlaidRabbit',
-        'SokarNox',
-        'Amberdark',
+        'MarvinTMB'
     ],
-    nonAggressionPlayers: ['Q13214', 'HerrKai', 'Raggy', 'somygame', 'shley92822212'],
+    nonAggressionPlayers: [],
     tradeBlacklist: [],
     pixelSelling: false,
     pixelGeneration: false,
     autoClaim: true,
     autoAttack: false,
     publicRamparts: false,
-    allyTrading: true,
+    allyCommunication: true,
     marketUsage: true,
     logging: Game.shard.name === 'performanceServer' ? 0 : 1,
     creepSay: true,
     creepChant: true,
-    simpleAlliesSegment: 90,
-    errorExporting: false,
+    allySegmentID: 90,
+    errorExporting: true,
     structureMigration: true,
+    roomLogisticsVisuals: false,
+    debugLogging: false,
 }

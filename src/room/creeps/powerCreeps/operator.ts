@@ -1,12 +1,14 @@
 import { Result, customColors, PowerCreepMemoryKeys } from 'international/constants'
-import { customLog, findObjectWithID, getRange } from 'international/utils'
+import { PowerTask } from 'types/roomRequests'
+import { customLog } from 'utils/logging'
+import { findObjectWithID, getRange } from 'utils/utils'
 
 export class Operator extends PowerCreep {
     constructor(creepID: Id<PowerCreep>) {
         super(creepID)
     }
 
-    preTickManager() {
+    initRun() {
         this.managePowerTask()
         this.avoidEnemyThreatCoords()
     }
@@ -50,14 +52,14 @@ export class Operator extends PowerCreep {
     findRenewTask?() {
         if (this.ticksToLive > POWER_CREEP_LIFE_TIME * 0.1) return false
 
-        if (!this.room.powerSpawn) return false
+        if (!this.room.roomManager.powerSpawn) return false
 
         this.memory[PowerCreepMemoryKeys.task] = 'advancedRenew'
         return true
     }
 
     advancedRenew?() {
-        const powerSpawn = this.room.powerSpawn
+        const powerSpawn = this.room.roomManager.powerSpawn
         if (!powerSpawn) return Result.fail
 
         const minRange = 1

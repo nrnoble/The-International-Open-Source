@@ -2,22 +2,19 @@ import {
     buildableStructuresSet,
     buildableStructureTypes,
     customColors,
+    impassibleStructureTypesSet,
     Result,
     RoomMemoryKeys,
     structureTypesToProtectSet,
 } from 'international/constants'
-import {
-    customLog,
-    findObjectWithID,
-    packAsNum,
-    randomIntRange,
-    randomTick,
-} from 'international/utils'
+import { customLog } from 'utils/logging'
+import { findObjectWithID, packAsNum, randomIntRange, randomTick } from 'utils/utils'
 import { packCoord, unpackCoord } from 'other/codec'
 import { CommuneManager } from 'room/commune/commune'
 import { BasePlans } from './basePlans'
 import { RampartPlans } from './rampartPlans'
 import { collectiveManager } from 'international/collective'
+import { Sleepable } from 'utils/Sleepable'
 
 const generalMigrationStructures: BuildableStructureConstant[] = [
     STRUCTURE_EXTENSION,
@@ -32,76 +29,97 @@ const generalMigrationStructures: BuildableStructureConstant[] = [
     STRUCTURE_CONTAINER,
     STRUCTURE_NUKER,
     STRUCTURE_FACTORY,
+    STRUCTURE_WALL,
 ]
 const noOverlapDestroyStructures: Set<StructureConstant> = new Set([
     STRUCTURE_SPAWN,
     STRUCTURE_RAMPART,
 ])
 
-export class ConstructionManager {
+export class ConstructionManager extends Sleepable {
     communeManager: CommuneManager
     room: Room
     placedSites: number
-    lastRun = Game.time
+    sleepFor = randomIntRange(50, 100)
 
     constructor(communeManager: CommuneManager) {
+        super()
         this.communeManager = communeManager
     }
 
     preTickRun() {
         this.room = this.communeManager.room
 
+        this.manageConstructionSites()
+
         if (!this.room.memory[RoomMemoryKeys.communePlanned]) return
         // If it's not our first room, wait until RCL 2 before begining construction efforts
         if (!this.room.roomManager.isStartRoom() && this.room.controller.level < 2) return
-
-        /* this.visualize() */
 
         if (this.clearEnemyStructures() === Result.action) return
 
         this.place()
         this.migrate()
     }
-    private place() {
-        // If there are builders and enough cSites, stop
+    /**
+     * Try to shove creeps off of impassible construction sites so they can be built on
+     */
+    private manageConstructionSites() {
 
-        if (this.room.myCreeps.builder.length) {
-            if (this.room.find(FIND_MY_CONSTRUCTION_SITES).length > 2) return
+        const constructionSites = this.room.find(FIND_MY_CONSTRUCTION_SITES)
+        for (const cSite of constructionSites) {
+
+            if (!impassibleStructureTypesSet.has(cSite.structureType)) continue
+
+            const creepName = this.room.creepPositions[packCoord(cSite.pos)]
+            if (!creepName) continue
+
+            const creep = Game.creeps[creepName]
+            creep.shove()
         }
-        // If there are no builders, just run every few ticks
-        else if (
-            this.room.controller.level !== 1 &&
-            this.lastRun &&
-            this.lastRun + randomIntRange(20, 100) > Game.time
-        )
-            return
-
-        this.lastRun = Game.time
-
+    }
+    private shouldPlace() {
         // If the construction site count is at its limit, stop
+        if (collectiveManager.constructionSiteCount >= MAX_CONSTRUCTION_SITES) return false
 
-        if (global.constructionSitesCount === MAX_CONSTRUCTION_SITES) return
+        // If there are builders and enough cSites, stop
+        if (this.room.myCreeps.builder.length) {
+            if (this.room.find(FIND_MY_CONSTRUCTION_SITES).length > 2) return false
 
-        // If there are enough construction sites
+            return true
+        }
 
+        // If there are no builders
+
+        // Only run every so often
+        else if (this.room.controller.level !== 1 && this.isSleeping()) return false
+        this.sleepWhenDone()
+
+        // If there are too many construction sites
         if (this.room.find(FIND_MY_CONSTRUCTION_SITES).length >= collectiveManager.maxCSitesPerRoom)
-            return
+            return false
+
+        return true
+    }
+    private place() {
+        if (!this.shouldPlace()) return
 
         this.placedSites = 0
 
         const RCL = this.room.controller.level
-        const maxCSites = collectiveManager.maxCSitesPerRoom
+        const maxCSites = Math.min(
+            collectiveManager.maxCSitesPerRoom,
+            MAX_CONSTRUCTION_SITES - collectiveManager.constructionSiteCount,
+        )
 
         this.placeRamparts(RCL, maxCSites)
         this.placeBase(RCL, maxCSites)
     }
     private placeRamparts(RCL: number, maxCSites: number) {
-        const rampartPlans = RampartPlans.unpack(this.room.memory[RoomMemoryKeys.rampartPlans])
+        const rampartPlans = this.communeManager.room.roomManager.rampartPlans
         const hasStoringStructure = !!this.room.communeManager.storingStructures.length
 
         for (const packedCoord in rampartPlans.map) {
-            if (this.placedSites >= maxCSites) return
-
             const coord = unpackCoord(packedCoord)
             const data = rampartPlans.map[packedCoord]
             if (data.minRCL > RCL) continue
@@ -113,10 +131,15 @@ export class ConstructionManager {
                     coord,
                     structure => structure.structureType === STRUCTURE_RAMPART,
                 )
-            )
+            ) {
                 continue
-            if (data.coversStructure) {
-                if (!this.room.coordHasStructureTypes(coord, structureTypesToProtectSet)) continue
+            }
+
+            if (
+                data.coversStructure &&
+                !this.room.coordHasStructureTypes(coord, structureTypesToProtectSet)
+            ) {
+                continue
             }
 
             if (data.buildForNuke) {
@@ -128,7 +151,7 @@ export class ConstructionManager {
             }
 
             if (data.buildForThreat) {
-                if (!this.communeManager.needsSecondMincutLayer) continue
+                if (!this.communeManager.buildSecondMincutLayer) continue
 
                 this.room.createConstructionSite(coord.x, coord.y, STRUCTURE_RAMPART)
                 this.placedSites += 1
@@ -137,6 +160,7 @@ export class ConstructionManager {
 
             this.room.createConstructionSite(coord.x, coord.y, STRUCTURE_RAMPART)
             this.placedSites += 1
+            if (this.placedSites >= maxCSites) return
         }
 
         if (this.placedSites >= maxCSites) return
@@ -144,12 +168,10 @@ export class ConstructionManager {
     private placeBase(RCL: number, maxCSites: number) {
         if (this.placedSites >= maxCSites) return
 
-        const basePlans = BasePlans.unpack(this.room.memory[RoomMemoryKeys.basePlans])
+        const basePlans = this.communeManager.room.roomManager.basePlans
 
         for (let placeRCL = 1; placeRCL <= RCL; placeRCL++) {
             for (const packedCoord in basePlans.map) {
-                if (this.placedSites >= maxCSites) return
-
                 const coord = unpackCoord(packedCoord)
                 const coordData = basePlans.map[packedCoord]
 
@@ -182,32 +204,36 @@ export class ConstructionManager {
 
                     this.room.createConstructionSite(coord.x, coord.y, data.structureType)
                     this.placedSites += 1
+                    if (this.placedSites >= maxCSites) return
                     break
                 }
             }
         }
     }
     public visualize() {
-        const RCL = /* this.room.controller.level */ 8
-        const basePlans = BasePlans.unpack(this.room.memory[RoomMemoryKeys.basePlans])
+        const RCL = /* this.room.controller.level */ /* Game.time % 8 */ 8
+        const basePlans = this.room.roomManager.basePlans
 
-        for (const packedCoord in basePlans.map) {
-            const coord = unpackCoord(packedCoord)
-            const coordData = basePlans.map[packedCoord]
+        for (let placeRCL = 1; placeRCL <= RCL; placeRCL++) {
+            for (const packedCoord in basePlans.map) {
+                const coord = unpackCoord(packedCoord)
+                const coordData = basePlans.map[packedCoord]
 
-            for (let i = 0; i < coordData.length; i++) {
-                const data = coordData[i]
-                if (data.minRCL > RCL) continue
+                for (let i = 0; i < coordData.length; i++) {
+                    const data = coordData[i]
+                    if (data.minRCL > RCL) continue
+                    if (data.minRCL > placeRCL) break
 
-                this.room.visual.structure(coord.x, coord.y, data.structureType)
-                this.room.visual.text(data.minRCL.toString(), coord.x, coord.y - 0.25, {
-                    font: 0.4,
-                })
-                break
+                    this.room.visual.structure(coord.x, coord.y, data.structureType)
+                    this.room.visual.text(data.minRCL.toString(), coord.x, coord.y - 0.25, {
+                        font: 0.4,
+                    })
+                    break
+                }
             }
         }
 
-        const rampartPlans = RampartPlans.unpack(this.room.memory[RoomMemoryKeys.rampartPlans])
+        const rampartPlans = this.communeManager.room.roomManager.rampartPlans
 
         for (const packedCoord in rampartPlans.map) {
             const coord = unpackCoord(packedCoord)
@@ -248,7 +274,7 @@ export class ConstructionManager {
         if (!randomTick(100)) return
 
         const structures = this.room.roomManager.structures
-        const basePlans = BasePlans.unpack(this.room.memory[RoomMemoryKeys.basePlans])
+        const basePlans = this.room.roomManager.basePlans
 
         for (const structureType of generalMigrationStructures) {
             for (const structure of structures[structureType]) {
@@ -295,7 +321,7 @@ export class ConstructionManager {
             misplacedSpawns[i].destroy()
         }
         /*
-        const rampartPlans = RampartPlans.unpack(this.room.memory[RoomMemoryKeys.rampartPlans])
+        const rampartPlans = this.room.roomManager.rampartPlans
 
         for (const structure of structures.rampart) {
             const packedCoord = packCoord(structure.pos)

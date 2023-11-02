@@ -6,8 +6,9 @@ import {
     communeSign,
     nonCommuneSigns,
 } from 'international/constants'
-import { cleanRoomMemory, findClosestCommuneName, getRangeXY, getRange } from 'international/utils'
+import { getRangeXY, getRange } from 'utils/utils'
 import { partial } from 'lodash'
+import { roomUtils } from 'room/roomUtils'
 
 export class Scout extends Creep {
     scoutedRooms?: string[]
@@ -17,7 +18,7 @@ export class Scout extends Creep {
         super(creepID)
     }
 
-    preTickManager() {
+    initRun() {
         if (!this.memory[CreepMemoryKeys.scoutTarget]) return
 
         this.commune.scoutTargets.add(this.memory[CreepMemoryKeys.scoutTarget])
@@ -124,7 +125,7 @@ export class Scout extends Creep {
         // Make sure the room has a commune
 
         if (room.memory[RoomMemoryKeys.commune]) {
-            if (!global.communes.has(room.memory[RoomMemoryKeys.commune])) {
+            if (!collectiveManager.communes.has(room.memory[RoomMemoryKeys.commune])) {
                 room.memory[RoomMemoryKeys.commune] = findClosestCommuneName(room.name)
             }
         } else {
@@ -152,7 +153,6 @@ export class Scout extends Creep {
      * Tries to sign a room's controller depending on the situation
      */
     advancedSignController?(): boolean {
-
         const { controller } = this.room
         if (!controller) return true
 
@@ -221,7 +221,7 @@ export class Scout extends Creep {
             )
                 return true
 
-                this.message = this.moveRequest
+            this.message = this.moveRequest
 
             return false
         }
@@ -254,7 +254,7 @@ export class Scout extends Creep {
 
                 // Clean the room's memory
 
-                cleanRoomMemory(room.name)
+                roomUtils.cleanMemory(room.name)
 
                 // And delete the creep's scoutTarget
 

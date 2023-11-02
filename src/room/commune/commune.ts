@@ -1,7 +1,5 @@
 import {
-    cleanRoomMemory,
     createPosMap,
-    customLog,
     findAdjacentCoordsToCoord,
     findAdjacentCoordsToXY,
     findClosestObject,
@@ -23,7 +21,8 @@ import {
     unpackNumAsCoord,
     findLowestScore,
     roundTo,
-} from 'international/utils'
+    forCoordsAroundRange,
+} from 'utils/utils'
 import { TerminalManager } from './terminal/terminal'
 import './spawning/spawningStructures'
 
@@ -45,6 +44,10 @@ import {
     RoomMemoryKeys,
     RoomTypes,
     rampartUpkeepCost,
+    RemoteResourcePathTypes,
+    Result,
+    ReservedCoordTypes,
+    RoomStatsKeys,
 } from 'international/constants'
 import './factory'
 import { LabManager } from './labs'
@@ -69,6 +72,7 @@ import {
     packCoord,
     packXYAsCoord,
     unpackCoord,
+    unpackPosAt,
     unpackPosList,
     unpackStampAnchors,
 } from 'other/codec'
@@ -81,14 +85,20 @@ import { FactoryManager } from './factory'
 import { SpawnRequestsManager } from './spawning/spawnRequests'
 import { ObserverManager } from './observer'
 import { decode, encode } from 'base32768'
-import { BasePlans } from '../construction/basePlans'
 import { collectiveManager } from 'international/collective'
 import { ConstructionManager } from 'room/construction/construction'
 import { RampartPlans } from 'room/construction/rampartPlans'
 import { has } from 'lodash'
+import { roomUtils } from 'room/roomUtils'
+import { LogTypes, customLog } from 'utils/logging'
+import { creepUtils } from 'room/creeps/creepUtils'
+import { SpawnRequestArgs } from 'types/spawnRequest'
 
 export class CommuneManager {
+    static communeManagers: { [roomName: string]: CommuneManager } = {}
+
     // Managers
+
     constructionManager: ConstructionManager
     defenceManager: DefenceManager
 
@@ -117,7 +127,6 @@ export class CommuneManager {
 
     room: Room
     nextSpawnEnergyAvailable: number
-    estimatedEnergyIncome: number
     /**
      * Organized by remote and sourceIndex
      */
@@ -137,6 +146,7 @@ export class CommuneManager {
     haulerNeed: number
     mineralHarvestStrength: number
     upgradeStrength: number
+    remoteResourcePathType: RemoteResourcePathTypes
 
     constructor() {
         this.constructionManager = new ConstructionManager(this)
@@ -173,6 +183,9 @@ export class CommuneManager {
         delete this._sourceLinks
         delete this._controllerLink
         delete this.towerAttackTarget
+        delete this._actionableSpawningStructures
+        delete this._spawningStructuresByPriority
+        delete this._spawningStructuresByNeed
 
         if (randomTick()) {
             delete this._maxUpgradeStrength
@@ -190,7 +203,7 @@ export class CommuneManager {
         if (roomMemory[RoomMemoryKeys.abandonCommune] === true) {
             room.controller.unclaim()
             roomMemory[RoomMemoryKeys.type] = RoomTypes.neutral
-            cleanRoomMemory(room.name)
+            roomUtils.cleanMemory(room.name)
 
             for (const cSite of room.find(FIND_MY_CONSTRUCTION_SITES)) {
                 cSite.remove()
@@ -199,21 +212,24 @@ export class CommuneManager {
         }
 
         roomMemory[RoomMemoryKeys.type] = RoomTypes.commune
-        global.communes.add(room.name)
+        collectiveManager.communes.add(room.name)
 
         if (this.room.controller.safeMode) collectiveManager.safemodedCommuneName = this.room.name
 
         if (!roomMemory[RoomMemoryKeys.greatestRCL]) {
-            if (global.communes.size <= 1)
+            if (collectiveManager.communes.size <= 1)
                 roomMemory[RoomMemoryKeys.greatestRCL] = room.controller.level
             else if (
                 room.controller.progress > room.controller.progressTotal ||
-                room.find(FIND_MY_STRUCTURES).length
+                room.find(FIND_MY_STRUCTURES, {
+                    filter: structure => structure.structureType !== STRUCTURE_CONTROLLER,
+                }).length
             ) {
                 roomMemory[RoomMemoryKeys.greatestRCL] = 8
             } else roomMemory[RoomMemoryKeys.greatestRCL] = room.controller.level
-        } else if (room.controller.level > roomMemory[RoomMemoryKeys.greatestRCL])
+        } else if (room.controller.level > roomMemory[RoomMemoryKeys.greatestRCL]) {
             roomMemory[RoomMemoryKeys.greatestRCL] = room.controller.level
+        }
 
         if (!roomMemory[RoomMemoryKeys.combatRequests])
             roomMemory[RoomMemoryKeys.combatRequests] = []
@@ -224,11 +240,11 @@ export class CommuneManager {
         this.mineralHarvestStrength = 0
         this.haulerNeed = 0
         this.nextSpawnEnergyAvailable = room.energyAvailable
-        this.estimatedEnergyIncome = 0
 
         if (!roomMemory[RoomMemoryKeys.remotes]) roomMemory[RoomMemoryKeys.remotes] = []
-        if (roomMemory[RoomMemoryKeys.threatened] == undefined)
+        if (roomMemory[RoomMemoryKeys.threatened] == undefined) {
             roomMemory[RoomMemoryKeys.threatened] = 0
+        }
 
         room.usedRampartIDs = new Map()
 
@@ -248,6 +264,19 @@ export class CommuneManager {
                 this.remoteSourceHarvesters[remoteName].push([])
         }
 
+        // identify the remoteSourcePathType
+
+        if (!this.remoteResourcePathType || randomTick()) {
+            if (this.storingStructures.length) {
+                /* this.remoteSourcePathType = RoomMemoryKeys.remoteSourceHubPaths */
+                this.remoteResourcePathType = RoomMemoryKeys.remoteSourceFastFillerPaths
+            } else {
+                this.remoteResourcePathType = RoomMemoryKeys.remoteSourceFastFillerPaths
+            }
+        }
+
+        Memory.rooms[this.room.name][this.remoteResourcePathType]
+
         // For each role, construct an array for creepsFromRoom
 
         room.creepsFromRoom = {}
@@ -263,13 +292,14 @@ export class CommuneManager {
         room.defenderEnemyTargetsWithDamage = new Map()
         room.defenderEnemyTargetsWithDefender = new Map()
 
-        if (room.terminal && room.controller.level >= 6)
+        if (room.terminal && room.controller.level >= 6) {
             collectiveManager.terminalCommunes.push(room.name)
+        }
 
-        collectiveManager.mineralCommunes[this.room.roomManager.mineral.mineralType] += 1
+        collectiveManager.mineralNodes[this.room.roomManager.mineral.mineralType] += 1
     }
 
-    preTickRun() {
+    initRun() {
         this.preTickTest()
 
         this.room.roomManager.communePlanner.preTickRun()
@@ -280,13 +310,13 @@ export class CommuneManager {
         this.constructionManager.preTickRun()
         this.observerManager.preTickRun()
         this.terminalManager.preTickRun()
-        this.remotesManager.preTickRun()
+        this.remotesManager.initRun()
         this.haulRequestManager.preTickRun()
         this.sourceManager.preTickRun()
         this.workRequestManager.preTickRun()
     }
 
-    public run() {
+    run() {
         if (!this.room.memory[RoomMemoryKeys.communePlanned]) return
 
         this.defenceManager.run()
@@ -335,8 +365,7 @@ export class CommuneManager {
         let CPUUsed = Game.cpu.getUsed()
 
         customLog('CPU TEST 1 ' + this.room.name, Game.cpu.getUsed() - CPUUsed, {
-            bgColor: customColors.red,
-            textColor: customColors.white,
+            type: LogTypes.info,
         })
     }
 
@@ -356,9 +385,20 @@ export class CommuneManager {
         let CPUUsed = Game.cpu.getUsed()
 
         customLog('CPU TEST 1 ' + this.room.name, Game.cpu.getUsed() - CPUUsed, {
-            bgColor: customColors.red,
-            textColor: customColors.white,
+            type: LogTypes.info,
         })
+    }
+
+    /**
+     * Debug
+     */
+    private visualizeSpawningStructuresByNeed() {
+        customLog('spawningStructuresByNeed', this.spawningStructuresByNeed, {
+            type: LogTypes.error,
+        })
+        for (const structure of this.spawningStructuresByNeed) {
+            this.room.coordVisual(structure.pos.x, structure.pos.y)
+        }
     }
 
     deleteCombatRequest(requestName: string, index: number) {
@@ -372,7 +412,7 @@ export class CommuneManager {
         const remoteMemory = Memory.rooms[remoteName]
 
         remoteMemory[RoomMemoryKeys.type] = RoomTypes.neutral
-        cleanRoomMemory(remoteName)
+        roomUtils.cleanMemory(remoteName)
     }
 
     findMinRangedAttackCost(minDamage: number = 10) {
@@ -410,6 +450,16 @@ export class CommuneManager {
         const combinedCost = BODYPART_COST[WORK] + BODYPART_COST[MOVE]
 
         return Math.ceil(rawCost / combinedCost) * combinedCost
+    }
+
+    get estimatedEnergyIncome() {
+        const roomStats = Memory.stats.rooms[this.room.name]
+        return roundTo(
+            roomStats[RoomStatsKeys.EnergyInputHarvest] +
+                roomStats[RoomStatsKeys.RemoteEnergyInputHarvest] +
+                roomStats[RoomStatsKeys.EnergyInputBought],
+            2,
+        )
     }
 
     private _minStoredEnergy: number
@@ -540,10 +590,10 @@ export class CommuneManager {
         if (this._maxCombatRequests !== undefined) return this._maxCombatRequests
 
         /* return (this._maxCombatRequests =
-            (this.room.resourcesInStoringStructures.energy - this.minStoredEnergy) /
+            (this.room.roomManager.resourcesInStoringStructures.energy - this.minStoredEnergy) /
             (5000 + this.room.controller.level * 1000)) */
         return (this._maxCombatRequests =
-            this.room.resourcesInStoringStructures.energy /
+            this.room.roomManager.resourcesInStoringStructures.energy /
             (10000 + this.room.controller.level * 3000))
     }
 
@@ -554,8 +604,7 @@ export class CommuneManager {
         // Only set true if there are no viable storing structures
 
         return (
-            !this.room.fastFillerContainerLeft &&
-            !this.room.fastFillerContainerRight &&
+            !this.room.roomManager.fastFillerContainers.length &&
             !this.room.storage &&
             !this.room.terminal
         )
@@ -578,7 +627,7 @@ export class CommuneManager {
 
         // Link
 
-        const hubLink = this.room.hubLink
+        const hubLink = this.room.roomManager.hubLink
         const sourceLinks = this.sourceLinks
 
         // If there are transfer links, max out partMultiplier to their ability
@@ -622,7 +671,7 @@ export class CommuneManager {
      * Informs wether we have sufficient roads compared to the roadQuota for our RCL
      */
     get hasSufficientRoads() {
-        if (this._hasSufficientRoads !== undefined) return this._hasSufficientRoads
+        /* if (this._hasSufficientRoads !== undefined) return this._hasSufficientRoads */
 
         const roomMemory = Memory.rooms[this.room.name]
         const RCLIndex = this.room.controller.level - 1
@@ -633,6 +682,7 @@ export class CommuneManager {
         if (minRoads === 0) return false
 
         const roads = this.room.roomManager.structures.road.length
+
         // Make sure we have 90% of the intended roads amount
         return (this._hasSufficientRoads = roads >= minRoads * 0.9)
     }
@@ -649,7 +699,7 @@ export class CommuneManager {
         // We can use containers
 
         if (controllerLevel < 5) {
-            return (this._upgradeStructure = this.room.controllerContainer)
+            return (this._upgradeStructure = this.room.roomManager.controllerContainer)
         }
 
         // We can use links
@@ -657,7 +707,7 @@ export class CommuneManager {
         const controllerLink = this.controllerLink
         if (!controllerLink || !controllerLink.RCLActionable) return false
 
-        const hubLink = this.room.hubLink
+        const hubLink = this.room.roomManager.hubLink
         if (!hubLink || !hubLink.RCLActionable) return false
 
         return (this._upgradeStructure = controllerLink)
@@ -667,7 +717,7 @@ export class CommuneManager {
     get structureTypesByBuildPriority() {
         if (this._structureTypesByBuildPriority) return this._structureTypesByBuildPriority
 
-        if (!this.room.fastFillerContainerLeft && !this.room.fastFillerContainerRight) {
+        if (!this.room.roomManager.fastFillerContainers.length) {
             return (this._structureTypesByBuildPriority = [
                 STRUCTURE_RAMPART,
                 STRUCTURE_WALL,
@@ -740,7 +790,7 @@ export class CommuneManager {
     private _rampartRepairTargets: StructureRampart[]
     get rampartRepairTargets() {
         const rampartRepairTargets: StructureRampart[] = []
-        const rampartPlans = RampartPlans.unpack(this.room.memory[RoomMemoryKeys.rampartPlans])
+        const rampartPlans = this.room.roomManager.rampartPlans
 
         for (const structure of this.room.roomManager.structures.rampart) {
             const data = rampartPlans.map[packCoord(structure.pos)]
@@ -750,16 +800,21 @@ export class CommuneManager {
             if (
                 data.coversStructure &&
                 !this.room.coordHasStructureTypes(structure.pos, structureTypesToProtectSet)
-            )
+            ) {
                 continue
+            }
 
             if (data.buildForNuke) {
                 if (!this.room.roomManager.nukeTargetCoords[packAsNum(structure.pos)]) continue
 
                 rampartRepairTargets.push(structure)
-            } else if (data.buildForThreat) {
-                if (!this.needsSecondMincutLayer) continue
+                continue
+            }
+            if (data.buildForThreat) {
+                if (!this.buildSecondMincutLayer) continue
+
                 rampartRepairTargets.push(structure)
+                continue
             }
 
             rampartRepairTargets.push(structure)
@@ -768,57 +823,58 @@ export class CommuneManager {
         return (this._rampartRepairTargets = rampartRepairTargets)
     }
 
-    get needsSecondMincutLayer() {
-        return (
+    /**
+     * Prescriptive of if we desire a second mincut layer
+     */
+    get buildSecondMincutLayer() {
+        const buildSecondMincutLayer =
             Memory.rooms[this.room.name][RoomMemoryKeys.threatened] >
-            Math.floor(Math.pow(this.room.controller.level * 30, 1.63))
-        )
+                Math.floor(Math.pow(this.room.controller.level * 30, 1.63)) &&
+            this.room.towerInferiority !== true
+
+        return buildSecondMincutLayer
     }
 
-    private sourceLinkIDs: Id<StructureLink>[]
+    sourceLinkIDs: (Id<StructureLink> | false)[]
     private _sourceLinks: (StructureLink | false)[]
     get sourceLinks() {
         if (this._sourceLinks) return this._sourceLinks
 
-        // If we have cached links, confirm they are valid and use them
+        // If we have cached links, convert them into false | StructureLink
         if (this.sourceLinkIDs) {
             const links: (StructureLink | false)[] = []
-
             for (const ID of this.sourceLinkIDs) {
-                const link = findObjectWithID(ID)
-                if (!link) break
+                if (!ID) {
+                    links.push(false)
+                    continue
+                }
 
+                const link = findObjectWithID(ID)
                 links.push(link)
             }
 
-            if (links.length === this.sourceLinkIDs.length) {
-                return (this._sourceLinks = links)
-            }
+            return (this._sourceLinks = links)
         }
 
         const stampAnchors = this.room.roomManager.stampAnchors
         if (!stampAnchors) throw Error('no stampAnchors for sourceLinks in ' + this.room.name)
 
         const links: (StructureLink | false)[] = []
-        let definedLinks = 0
+        this.sourceLinkIDs = []
 
-        for (const positions of this.room.roomManager.communeSourceHarvestPositions) {
-            const closestSourceHarvestPos = positions[0]
-
-            const structure = this.room.findStructureInRange(
-                closestSourceHarvestPos,
-                1,
+        for (const coord of stampAnchors.sourceLink) {
+            const structure = this.room.findStructureAtCoord(
+                coord,
                 structure => structure.structureType === STRUCTURE_LINK,
             ) as StructureLink | false
             links.push(structure)
+            this.sourceLinkIDs.push(false)
 
             if (!structure) continue
 
-            definedLinks += 1
+            this.sourceLinkIDs.push(structure.id)
         }
 
-        if (definedLinks === stampAnchors.sourceLink.length)
-            this.sourceLinkIDs = links.map(link => (link as StructureLink).id)
         return (this._sourceLinks = links)
     }
 
@@ -829,18 +885,18 @@ export class CommuneManager {
 
         if (this.controllerLinkID) {
             const structure = findObjectWithID(this.controllerLinkID)
-            if (structure) return structure
+            if (structure) return (this._controllerLink = structure)
         }
 
-        const structure = this.room.findStructureAtCoord(
+        this._controllerLink = this.room.findStructureAtCoord(
             this.room.roomManager.centerUpgradePos,
             structure => structure.structureType === STRUCTURE_LINK,
         ) as StructureLink | false
-        this._controllerLink = structure
+        if (!this._controllerLink) {
+            return this._controllerLink
+        }
 
-        if (!structure) return false
-
-        this.controllerLinkID = structure.id
+        this.controllerLinkID = this._controllerLink.id
         return this._controllerLink
     }
 
@@ -849,16 +905,210 @@ export class CommuneManager {
         if (this._fastFillerSpawnEnergyCapacity && !this.room.roomManager.structureUpdate)
             return this._fastFillerSpawnEnergyCapacity
 
-        let fastFillerSpawnEnergyCapacity = 0
         const anchor = this.room.roomManager.anchor
         if (!anchor) throw Error('no anchor for fastFillerSpawnEnergyCapacity ' + this.room)
 
-        for (const structure of this.room.spawningStructures) {
+        let fastFillerSpawnEnergyCapacity = 0
+
+        for (const structure of this.actionableSpawningStructures) {
             if (!structure.RCLActionable) continue
+            // Outside of the fastFiller
+            if (getRange(structure.pos, anchor) > 2) continue
 
             fastFillerSpawnEnergyCapacity += structure.store.getCapacity(RESOURCE_ENERGY)
         }
 
         return (this._fastFillerSpawnEnergyCapacity = fastFillerSpawnEnergyCapacity)
     }
+
+    _actionableSpawningStructures: SpawningStructures
+    /**
+     * RCL actionable spawns and extensions
+     */
+    get actionableSpawningStructures() {
+        if (this._actionableSpawningStructures) return this._actionableSpawningStructures
+
+        const structures = this.room.roomManager.structures
+
+        let actionableSpawningStructures: SpawningStructures = structures.spawn
+        actionableSpawningStructures = actionableSpawningStructures.concat(structures.extension)
+        actionableSpawningStructures = actionableSpawningStructures.filter(
+            structure => structure.RCLActionable,
+        )
+
+        return (this._actionableSpawningStructures = actionableSpawningStructures)
+    }
+
+    spawningStructuresByPriorityIDs: Id<StructureExtension | StructureSpawn>[]
+    _spawningStructuresByPriority: SpawningStructures
+    get spawningStructuresByPriority() {
+        if (this._spawningStructuresByPriority) return this._spawningStructuresByPriority
+
+        if (this.spawningStructuresByPriorityIDs && !this.room.roomManager.structureUpdate) {
+            return (this._spawningStructuresByPriority = this.spawningStructuresByPriorityIDs.map(
+                ID => findObjectWithID(ID),
+            ))
+        }
+
+        const anchor = this.room.roomManager.anchor
+        if (!anchor) throw Error('no anchor')
+
+        let spawningStructuresByPriority: SpawningStructures = []
+        const structuresToSort: SpawningStructures = []
+
+        for (const structure of this.actionableSpawningStructures) {
+            if (roomUtils.isSourceSpawningStructure(this.room.name, structure)) {
+                spawningStructuresByPriority.push(structure)
+            }
+
+            structuresToSort.push(structure)
+        }
+
+        spawningStructuresByPriority = spawningStructuresByPriority.concat(
+            structuresToSort.sort((a, b) => getRange(a.pos, anchor) - getRange(b.pos, anchor)),
+        )
+
+        this.spawningStructuresByPriorityIDs = spawningStructuresByPriority.map(
+            structure => structure.id,
+        )
+        return (this._spawningStructuresByPriority = spawningStructuresByPriority)
+    }
+
+    spawningStructuresByNeedIDs: Id<StructureExtension | StructureSpawn>[]
+    _spawningStructuresByNeed: SpawningStructures
+    get spawningStructuresByNeed() {
+        if (this._spawningStructuresByNeed) return this._spawningStructuresByNeed
+
+        // mark coords in range 1 of reserved source harvest positions
+        // mark coords in range of valid fastFiller position
+
+        let ignoreCoords = new Set<string>()
+
+        // source extensions
+
+        const packedHarvestPositions =
+            Memory.rooms[this.room.name][RoomMemoryKeys.communeSourceHarvestPositions]
+        for (const packedPositions of packedHarvestPositions) {
+            const pos = unpackPosAt(packedPositions, 0)
+
+            // Make sure the position is reserved (presumably by a harvester)
+
+            const reserveType = this.room.roomManager.reservedCoords.get(packCoord(pos))
+            if (!reserveType) continue
+            if (reserveType < ReservedCoordTypes.dying) continue
+
+            forCoordsAroundRange(pos, 1, coord => {
+                const structure = this.room.findStructureAtCoord(coord, structure => {
+                    return structure.structureType === STRUCTURE_EXTENSION
+                })
+                if (!structure) return
+
+                ignoreCoords.add(packCoord(coord))
+            })
+        }
+
+        ignoreCoords = this.findFastFillerIgnoreCoords(ignoreCoords)
+
+        // Filter out structures that have ignored coords
+        const spawningStructuresByNeed = this.actionableSpawningStructures.filter(structure => {
+            return !ignoreCoords.has(packCoord(structure.pos))
+        })
+
+        return (this._spawningStructuresByNeed = spawningStructuresByNeed)
+    }
+
+    private findFastFillerIgnoreCoords(ignoreCoords: Set<string>) {
+        const fastFillerLink = this.room.roomManager.fastFillerLink
+        if (
+            fastFillerLink &&
+            fastFillerLink.RCLActionable &&
+            this.room.roomManager.hubLink &&
+            this.room.roomManager.hubLink.RCLActionable &&
+            this.storingStructures.length &&
+            this.room.myCreeps.hubHauler.length
+        ) {
+            const fastFillerPositions = this.room.roomManager.fastFillerPositions
+            for (const pos of fastFillerPositions) {
+                // Make sure the position is reserved (presumably by a fastFiller)
+
+                const reserveType = this.room.roomManager.reservedCoords.get(packCoord(pos))
+                if (!reserveType) continue
+                if (reserveType < ReservedCoordTypes.dying) continue
+
+                forCoordsAroundRange(pos, 1, coord => {
+                    ignoreCoords.add(packCoord(coord))
+                })
+            }
+
+            return ignoreCoords
+        }
+
+        if (this.room.roomManager.fastFillerContainers.length) {
+            const fastFillerPositions = this.room.roomManager.fastFillerPositions
+            for (const pos of fastFillerPositions) {
+                // Make sure the position is reserved (presumably by a fastFiller)
+
+                const reserveType = this.room.roomManager.reservedCoords.get(packCoord(pos))
+                if (!reserveType) continue
+                if (reserveType < ReservedCoordTypes.dying) continue
+
+                // Only ignore coords if the fastFiller pos is in range of a container
+
+                let hasContainer: boolean
+                const potentialIgnoreCoords = new Set<string>()
+
+                forCoordsAroundRange(pos, 1, coord => {
+                    const structure = this.room.findStructureAtCoord(coord, structure => {
+                        return structure.structureType === STRUCTURE_CONTAINER
+                    })
+                    if (structure) {
+                        hasContainer = true
+                        return
+                    }
+
+                    // There is potentially a spawning structure on this coord
+
+                    potentialIgnoreCoords.add(packCoord(coord))
+                })
+
+                if (!hasContainer) continue
+
+                for (const packedCoord of potentialIgnoreCoords) {
+                    ignoreCoords.add(packedCoord)
+                }
+            }
+
+            return ignoreCoords
+        }
+
+        // There are no valid links or containers in the fastFiller
+
+        return ignoreCoords
+    }
+
+    /**
+     * Presciption on if we should be trying to build remote contianers
+     */
+    get shouldRemoteContainers() {
+        return this.room.energyCapacityAvailable >= 650
+    }
+
+    // /**
+    //  * Wether or not the barricade damage was recorded / updated for this tick
+    //  */
+    // barricadeDamageOverTimeRecorded: boolean
+    // _barricadeDamageOverTime: Uint16Array
+    // get barricadeDamageOverTime() {
+
+    //     if (this._barricadeDamageOverTime) return this._barricadeDamageOverTime
+
+    //     const barricadeDamageOverTime: Uint16Array = new Uint16Array(2500)
+
+    //     for (const rampart of this.room.roomManager.structures.rampart) {
+
+    //         const packedCoord = packAsNum(rampart.pos)
+
+    //         barricadeDamageOverTime[packedCoord] = rampart.hits
+    //     }
+    // }
 }

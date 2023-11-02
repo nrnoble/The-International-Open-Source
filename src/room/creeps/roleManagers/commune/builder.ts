@@ -1,14 +1,14 @@
-import { Result } from 'international/constants'
-import { customLog, findObjectWithID, getRange } from 'international/utils'
+import { Result, RoomLogisticsRequestTypes } from 'international/constants'
+import { customLog } from 'utils/logging'
+import { findObjectWithID, getRange } from 'utils/utils'
 
 export class Builder extends Creep {
     constructor(creepID: Id<Creep>) {
         super(creepID)
     }
 
-    preTickManager() {
-
-        if(this.avoidEnemyThreatCoords()) return
+    initRun() {
+        if (this.avoidEnemyThreatCoords()) return
 
         if (!this.room.roomManager.cSiteTarget) return
         if (!this.room.communeManager.buildersMakeRequests) return
@@ -16,7 +16,7 @@ export class Builder extends Creep {
 
         this.room.roomManager.room.createRoomLogisticsRequest({
             target: this,
-            type: 'transfer',
+            type: RoomLogisticsRequestTypes.transfer,
             priority: 100,
         })
     }

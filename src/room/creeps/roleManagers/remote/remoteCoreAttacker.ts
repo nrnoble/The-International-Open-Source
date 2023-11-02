@@ -6,7 +6,7 @@ import {
     RoomMemoryKeys,
     RoomTypes,
 } from 'international/constants'
-import { getRangeXY, randomIntRange, randomTick } from 'international/utils'
+import { getRangeXY, randomIntRange, randomTick } from 'utils/utils'
 
 export class RemoteCoreAttacker extends Creep {
     constructor(creepID: Id<Creep>) {
@@ -27,7 +27,7 @@ export class RemoteCoreAttacker extends Creep {
         return true
     }
 
-    preTickManager(): void {
+    initRun(): void {
         if (randomTick() && !this.getActiveBodyparts(MOVE)) this.suicide()
         if (!this.findRemote()) return
 
@@ -89,14 +89,16 @@ export class RemoteCoreAttacker extends Creep {
         const creepMemory = Memory.creeps[this.name]
 
         const role = 'remoteCoreAttacker'
-        const remoteNamesByEfficacy = this.commune.remoteNamesBySourceEfficacy
+        const remoteNamesByEfficacy = this.commune.roomManager.remoteNamesByEfficacy
 
         // Loop through each remote name
 
         for (const remoteName of remoteNamesByEfficacy) {
-            const roomMemory = Memory.rooms[remoteName]
+            const remoteMemory = Memory.rooms[remoteName]
+            if (remoteMemory[RoomMemoryKeys.type] !== RoomTypes.remote) continue
+            if (remoteMemory[RoomMemoryKeys.commune] !== this.room.name) continue
 
-            if (roomMemory[RoomMemoryKeys[role]] <= 0) continue
+            if (remoteMemory[RoomMemoryKeys[role]] <= 0) continue
 
             // Otherwise assign the remote to the creep and inform true
 

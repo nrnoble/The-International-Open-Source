@@ -2,7 +2,9 @@ import {
     CombatRequestKeys,
     CreepMemoryKeys,
     Result,
+    RoomMemoryKeys,
     RoomTypes,
+    WorkTypes,
     customColors,
     packedQuadAttackMemberOffsets,
     quadAttackMemberOffsets,
@@ -12,7 +14,6 @@ import {
 import {
     areCoordsEqual,
     arePositionsEqual,
-    customLog,
     doesCoordExist,
     doesXYExist,
     findClosestObject,
@@ -28,9 +29,12 @@ import {
     unpackNumAsCoord,
     forCoordsInRange,
     packXYAsNum,
-} from 'international/utils'
+} from 'utils/utils'
 import { packCoord, packXYAsCoord, unpackCoord } from 'other/codec'
 import { Antifa } from './antifa'
+import { CustomPathFinderArgs, PathGoal } from 'international/customPathFinder'
+import { LogTypes, customLog } from 'utils/logging'
+import { RoomManager } from 'room/room'
 
 const rangedFleeRange = 5
 const meleeFleeRange = 3
@@ -122,7 +126,7 @@ export class Quad {
 
         this.leader.message = 'IF'
 
-        if (this.leader.room.enemyDamageThreat && this.runCombat()) return
+        if (this.leader.room.roomManager.enemyDamageThreat && this.runCombat()) return
 
         this.passiveRangedAttack()
 
@@ -140,7 +144,7 @@ export class Quad {
             typeWeights: {
                 [RoomTypes.enemy]: Infinity,
                 [RoomTypes.ally]: 2,
-                [RoomTypes.keeper]: 5,
+                [RoomTypes.sourceKeeper]: 5,
                 [RoomTypes.enemyRemote]: 3,
                 [RoomTypes.allyRemote]: 3,
                 [RoomTypes.neutral]: 2,
@@ -152,7 +156,7 @@ export class Quad {
         if (this.leader.room.name !== this.leader.memory[CreepMemoryKeys.combatRequest])
             return false
         /*
-        if (!this.leader.room.enemyDamageThreat) {
+        if (!this.leader.room.roomManager.enemyDamageThreat) {
             for (const member of this.members) member.runCombat()
             return true
         }
@@ -171,7 +175,7 @@ export class Quad {
         if (this.leader.memory[CreepMemoryKeys.squadCombatType] === 'rangedAttack') {
             this.passiveRangedAttack()
 
-            const nearbyThreat = this.leader.room.enemyAttackers.find(
+            const nearbyThreat = this.leader.room.roomManager.enemyAttackers.find(
                 enemyCreep =>
                     this.findMinRange(enemyCreep.pos) <= 6 &&
                     (enemyCreep.combatStrength.ranged || enemyCreep.combatStrength.melee),
@@ -197,9 +201,8 @@ export class Quad {
 
             const kiteResult = this.rangedKite()
             if (kiteResult === Result.action) return true
-            if (kiteResult === Result.success) {
-                this.advancedTransform()
-            }
+
+            this.advancedTransform()
 
             if (this.bulldoze()) return true
             if (this.rangedAttackStructures()) return true
@@ -217,7 +220,13 @@ export class Quad {
     getInFormation(): boolean {
         if (this.leader.isOnExit) return true
 
-        if (this.leader.room.quadCostMatrix.get(this.leader.pos.x, this.leader.pos.y) >= 50) {
+        /* this.leader.room.visualizeCostMatrix(this.leader.room.roomManager.quadCostMatrix) */
+
+        if (
+            this.leader.room.roomManager.quadCostMatrix.get(this.leader.pos.x, this.leader.pos.y) >=
+            50
+        ) {
+            this.leader.room.coordVisual(this.leader.pos.x, this.leader.pos.y)
             /*
             this.leader.createMoveRequest({
                 goals: [
@@ -327,7 +336,7 @@ export class Quad {
         for (const member of this.members) member.moved = 'moved'
     }
 
-    createMoveRequest(opts: MoveRequestOpts, moveLeader = this.leader) {
+    createMoveRequest(opts: CustomPathFinderArgs, moveLeader = this.leader) {
         if (!this.willMove) {
             for (const member1 of this.members) {
                 if (!member1.fatigue) continue
@@ -360,7 +369,9 @@ export class Quad {
 
         // Attack mode
 
-        opts.weightCostMatrixes = ['quadCostMatrix']
+        opts.defaultCostMatrixes = function (roomName) {
+            return [RoomManager.roomManagers[roomName].quadCostMatrix]
+        }
         moveLeader.createMoveRequest(opts)
 
         if (!moveLeader.moveRequest) return false
@@ -386,7 +397,8 @@ export class Quad {
 
             if (!doesCoordExist(goalCoord)) continue
 
-            if (member.room.quadCostMatrix.get(goalCoord.x, goalCoord.y) >= 255) continue
+            if (member.room.roomManager.quadCostMatrix.get(goalCoord.x, goalCoord.y) >= 255)
+                continue
 
             member.assignMoveRequest(goalCoord)
         }
@@ -531,7 +543,7 @@ export class Quad {
                 if (member.worked) continue
 
                 member.heal(lowestHitsMember)
-                member.worked = true
+                member.worked = WorkTypes.heal
             }
 
             return
@@ -544,7 +556,7 @@ export class Quad {
         // Inform true if there are enemy threats in range
 
         if (
-            this.leader.room.enemyAttackers.find(
+            this.leader.room.roomManager.enemyAttackers.find(
                 enemyCreep =>
                     (enemyCreep.combatStrength.ranged && this.findMinRange(enemyCreep.pos) <= 3) ||
                     (enemyCreep.combatStrength.melee && this.findMinRange(enemyCreep.pos) <= 1),
@@ -579,7 +591,7 @@ export class Quad {
             const memberHealer = notHealedMembers[memberIndex]
 
             memberHealer.heal(member)
-            memberHealer.worked = true
+            memberHealer.worked = WorkTypes.heal
 
             notHealedMembers.splice(memberIndex, 1)
         }
@@ -587,18 +599,13 @@ export class Quad {
         return true
     }
 
-    /**
-     * Attack viable targets without moving
-     */
-    passiveRangedAttack() {
-        const attackingMemberNames = new Set(this.memberNames)
-
-        // Sort enemies by number of members that can attack them
+    private rangedAttackEnemyCreeps(attackingMemberNames: Set<string>) {
+        // Get enemies by damage members can deal
 
         const enemyTargetsWithDamage: Map<Id<Creep>, number> = new Map()
         const enemyTargetsWithAntifa: Map<Id<Creep>, Id<Antifa>[]> = new Map()
 
-        for (const enemyCreep of this.leader.room.unprotectedEnemyCreeps) {
+        for (const enemyCreep of this.leader.room.roomManager.unprotectedEnemyCreeps) {
             const memberIDsInRange: Id<Antifa>[] = []
 
             let netDamage = -1 * enemyCreep.combatStrength.heal
@@ -640,30 +647,79 @@ export class Quad {
                 attackingMemberNames.delete(member.name)
             }
 
-            if (!attackingMemberNames.size) return
+            if (!attackingMemberNames.size) return attackingMemberNames
         }
 
-        // If there is a target and there are members left that can attack, attack the target
+        return attackingMemberNames
+    }
 
-        if (!this.target) return
+    private rangedAttackEnemyStructures(attackingMemberNames: Set<string>) {
+        if (
+            Memory.rooms[this.leader.room.name][RoomMemoryKeys.type] === RoomTypes.commune ||
+            Memory.rooms[this.leader.room.name][RoomMemoryKeys.type] === RoomTypes.remote
+        )
+            return attackingMemberNames
 
+        for (const structure of this.leader.room.find(FIND_STRUCTURES)) {
+            for (const memberName of attackingMemberNames) {
+                const member = Game.creeps[memberName]
+
+                const range = getRange(member.pos, structure.pos)
+                if (range > 3) continue
+
+                if (!(structure as OwnedStructure).owner || range > 1) {
+                    member.rangedAttack(structure)
+                } else member.rangedMassAttack()
+
+                member.ranged = true
+                attackingMemberNames.delete(member.name)
+            }
+            if (!attackingMemberNames.size) return attackingMemberNames
+        }
+
+        return attackingMemberNames
+    }
+
+    private rangedAttackTarget(attackingMemberNames: Set<string>) {
         for (const memberName of attackingMemberNames) {
             const member = Game.creeps[memberName]
 
             const range = getRange(member.pos, this.target.pos)
             if (range > 3) continue
 
-            if (
-                (this.target instanceof Structure &&
-                    this.target.structureType === STRUCTURE_WALL) ||
-                range > 1
-            ) {
+            if (!(this.target as OwnedStructure).owner || range > 1) {
                 member.rangedAttack(this.target)
-                continue
-            }
+            } else member.rangedMassAttack()
 
-            member.rangedMassAttack()
+            member.ranged = true
+            attackingMemberNames.delete(member.name)
         }
+
+        return attackingMemberNames
+    }
+
+    /**
+     * Attack viable targets without moving
+     */
+    passiveRangedAttack() {
+        let attackingMemberNames = new Set(this.memberNames)
+
+        if (this.target && this.target instanceof Creep) {
+            attackingMemberNames = this.rangedAttackTarget(attackingMemberNames)
+            if (!attackingMemberNames.size) return
+        }
+
+        attackingMemberNames = this.rangedAttackEnemyCreeps(attackingMemberNames)
+        if (!attackingMemberNames.size) return
+
+        // If there is a target, even though it isn't a creep, try to attack it
+        if (this.target) {
+            attackingMemberNames = this.rangedAttackTarget(attackingMemberNames)
+            if (!attackingMemberNames.size) return
+        }
+
+        attackingMemberNames = this.rangedAttackEnemyStructures(attackingMemberNames)
+        if (!attackingMemberNames.size) return
     }
 
     private rangedAttackAttackers() {}
@@ -673,20 +729,20 @@ export class Quad {
     advancedRangedAttack() {
         const { room } = this.leader
 
-        let enemyCreeps = room.enemyAttackers.filter(function (creep) {
+        let enemyCreeps = room.roomManager.enemyAttackers.filter(function (creep) {
             return !creep.isOnExit
         })
 
-        if (!room.enemyAttackers.length) enemyCreeps = room.enemyAttackers
+        if (!room.roomManager.enemyAttackers.length) enemyCreeps = room.roomManager.enemyAttackers
 
         // If there are none
 
         if (!enemyCreeps.length) {
-            enemyCreeps = room.enemyCreeps.filter(function (creep) {
+            enemyCreeps = room.roomManager.notMyCreeps.enemy.filter(function (creep) {
                 return !creep.isOnExit
             })
 
-            if (!enemyCreeps.length) enemyCreeps = room.enemyCreeps
+            if (!enemyCreeps.length) enemyCreeps = room.roomManager.notMyCreeps.enemy
             if (!enemyCreeps.length) return false
 
             this.leader.message = 'EC'
@@ -793,6 +849,11 @@ export class Quad {
         const request = Memory.combatRequests[this.leader.memory[CreepMemoryKeys.combatRequest]]
         if (!request) return false
         if (request[CombatRequestKeys.type] === 'defend') return false
+        if (
+            Memory.rooms[this.leader.room.name][RoomMemoryKeys.type] === RoomTypes.commune ||
+            Memory.rooms[this.leader.room.name][RoomMemoryKeys.type] === RoomTypes.remote
+        )
+            return false
 
         let bulldozeTarget: Structure
         this.leader.memory[CreepMemoryKeys.quadBulldozeTargets] = []
@@ -846,8 +907,13 @@ export class Quad {
         const request = Memory.combatRequests[this.leader.memory[CreepMemoryKeys.combatRequest]]
         if (!request) return false
         if (request[CombatRequestKeys.type] === 'defend') return false
+        if (
+            Memory.rooms[this.leader.room.name][RoomMemoryKeys.type] === RoomTypes.commune ||
+            Memory.rooms[this.leader.room.name][RoomMemoryKeys.type] === RoomTypes.remote
+        )
+            return false
 
-        const structures = this.leader.room.combatStructureTargets
+        const structures = this.leader.room.roomManager.combatStructureTargets
 
         if (!structures.length) return false
 
@@ -943,7 +1009,7 @@ export class Quad {
     get combatStrength() {
         if (this._combatStrength) return this._combatStrength
 
-        this._combatStrength = {
+        const combatStrength = {
             dismantle: 0,
             melee: 0,
             ranged: 0,
@@ -951,14 +1017,17 @@ export class Quad {
         }
 
         for (const member of this.members) {
-            for (const key in this._combatStrength) {
+
+            const memberCombatStrength = member.combatStrength
+
+            for (const key in combatStrength) {
                 const combatType = key as keyof CombatStrength
 
-                this._combatStrength[combatType] = member.combatStrength[combatType]
+                combatStrength[combatType] += memberCombatStrength[combatType]
             }
         }
 
-        return this._combatStrength
+        return this._combatStrength = combatStrength
     }
 
     _defenceStrength: number
@@ -992,7 +1061,7 @@ export class Quad {
             goals: [],
         }
 
-        for (const enemyCreep of this.leader.room.enemyAttackers) {
+        for (const enemyCreep of this.leader.room.roomManager.enemyAttackers) {
             // Plus one to account for non-leader squad members
 
             if (getRange(enemyCreep.pos, this.leader.pos) > rangedFleeRange + 1) continue

@@ -1,5 +1,7 @@
-import { customLog, scalePriority } from 'international/utils'
+import { customLog } from 'utils/logging'
+import { scalePriority } from 'utils/utils'
 import { RoomManager } from 'room/room'
+import { RoomLogisticsRequestTypes } from 'international/constants'
 
 export class DroppedResourceManager {
     roomManager: RoomManager
@@ -9,15 +11,13 @@ export class DroppedResourceManager {
     }
 
     runCommune() {
-
-        for (const resource of this.roomManager.room.droppedResources) {
-
+        for (const resource of this.roomManager.droppedResources) {
             if (resource.amount < 50) continue
 
             this.roomManager.room.createRoomLogisticsRequest({
                 target: resource,
                 resourceType: resource.resourceType,
-                type: 'pickup',
+                type: RoomLogisticsRequestTypes.pickup,
                 priority: Math.max(5, 20 - resource.reserveAmount / 200),
                 onlyFull: true,
             })
@@ -25,15 +25,13 @@ export class DroppedResourceManager {
     }
 
     runRemote() {
-
-        for (const resource of this.roomManager.room.droppedResources) {
-
+        for (const resource of this.roomManager.droppedResources) {
             if (resource.resourceType !== RESOURCE_ENERGY) continue
             if (resource.amount < 50) continue
 
             this.roomManager.room.createRoomLogisticsRequest({
                 target: resource,
-                type: 'pickup',
+                type: RoomLogisticsRequestTypes.pickup,
                 priority: Math.max(5, 10 - resource.reserveAmount / 200),
             })
         }

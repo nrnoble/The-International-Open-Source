@@ -13,8 +13,11 @@ import {
     RoomMemoryKeys,
     RoomTypes,
     PlayerMemoryKeys,
-} from './constants'
-import { collectiveManager } from './collective'
+    CPUMaxPerTick,
+} from '../international/constants'
+import { collectiveManager } from '../international/collective'
+import { debugUtils } from 'debug/debugUtils'
+import { LogTypes, customLog } from './logging'
 
 /**
  * Finds the average trading price of a resourceType over a set amount of days
@@ -148,43 +151,6 @@ export function areCoordsEqual(coord1: Coord, coord2: Coord) {
  */
 export function arePositionsEqual(pos1: RoomPosition, pos2: RoomPosition) {
     return pos1.roomName === pos2.roomName && pos1.x === pos2.x && pos1.y === pos2.y
-}
-
-interface CustomLogOpts {
-    position?: number
-    textColor?: string
-    bgColor?: string
-}
-
-/**
- * Outputs HTML and CSS styled console logs
- * @param title Title of the log
- * @param message Main content of the log
- * @param color Colour of the text. Default is black
- * @param bgColor Colour of the background. Default is white
- */
-export function customLog(title: any, message?: any, opts?: CustomLogOpts) {
-    if (!global.settings.logging) return
-
-    if (!opts) opts = {}
-    if (!opts.textColor) opts.textColor = customColors.black
-    if (!opts.bgColor) opts.bgColor = customColors.white
-
-    // Create the title
-
-    global.logs += `<div style='width: 85vw; text-align: center; align-items: center; justify-content: left; display: flex; background: ${
-        opts.bgColor
-    }; margin-left: ${
-        (opts.position ?? 0) * 8
-    }px;'><div style='padding: 3px; font-size: 14px; font-weigth: 400; color: ${
-        opts.textColor
-    };'>${title}:</div>`
-
-    // Create the content
-
-    global.logs += `<div style='box-shadow: inset rgb(0, 0, 0, 0.1) 0 0 0 10000px; padding: 3px; font-size: 14px; font-weight: 200; color: ${
-        opts.textColor
-    };'>${message ?? ''}</div></div>`
 }
 
 /**
@@ -534,60 +500,6 @@ export function findCreepInQueueMatchingRequest(queue: string[], requestPackedPo
     return undefined
 }
 
-/**
- * Finds the largest possible transaction amount given a budget and starting amount
- * @param budget The number of energy willing to be invested in the trade
- * @param amount The number of resources that would like to be traded
- * @param roomName1
- * @param roomName2
- * @returns
- */
-export function findLargestTransactionAmount(
-    budget: number,
-    amount: number,
-    roomName1: string,
-    roomName2: string,
-) {
-    budget = Math.max(budget, 1)
-
-    // So long as the the transactions cost is more than the budget
-
-    while (Game.market.calcTransactionCost(amount, roomName1, roomName2) >= budget) {
-        // Decrease amount exponentially
-
-        amount = (amount - 1) * 0.8
-    }
-
-    return Math.floor(amount)
-}
-
-/**
- * Finds the name of the closest commune, exluding the specified roomName
- */
-export function findClosestCommuneName(roomName: string) {
-    const communesNotThis = []
-
-    for (const communeName of global.communes) {
-        if (roomName == communeName) continue
-
-        communesNotThis.push(communeName)
-    }
-
-    return communesNotThis.sort(
-        (a, b) =>
-            Game.map.getRoomLinearDistance(roomName, a) -
-            Game.map.getRoomLinearDistance(roomName, b),
-    )[0]
-}
-
-export function findClosestClaimType(roomName: string) {
-    return Array.from(global.communes).sort(
-        (a, b) =>
-            Game.map.getRoomLinearDistance(roomName, a) -
-            Game.map.getRoomLinearDistance(roomName, b),
-    )[0]
-}
-
 export function findClosestRoomName(start: string, targets: string[]) {
     let minRange = Infinity
     let closest = undefined
@@ -642,28 +554,6 @@ export function randomChance(number: number = 10) {
 
 export function randomRange(min: number, max: number) {
     return Math.floor(Math.random() * (max - min) + min)
-}
-
-/**
- * Removes roomType-based values in the room's memory that don't match its type
- */
-export function cleanRoomMemory(roomName: string) {
-    const roomMemory = Memory.rooms[roomName]
-
-    // Loop through keys in the room's memory
-
-    for (const key in roomMemory) {
-        // Iterate if key is not part of roomTypeProperties
-
-        if (!roomTypeProperties.has(key as unknown as keyof RoomMemory)) continue
-
-        // Iterate if key is part of this roomType's properties
-
-        if (roomTypes[roomMemory[RoomMemoryKeys.type]].has(key as unknown as keyof RoomMemory))
-            continue
-
-        delete roomMemory[key as unknown as keyof RoomMemory]
-    }
 }
 
 export function isNearRoomEdge(coord: Coord, minRange: number) {
@@ -956,4 +846,34 @@ export function isAlly(playerName: string) {
 
     if (playerMemory[PlayerMemoryKeys.relationship] !== 'ally') return false
     return true
+}
+
+export function outOfBucket() {
+
+    collectiveManager.logs = ''
+    customLog('Skipping tick due to low bucket, bucket remaining', Game.cpu.bucket, {
+        type: LogTypes.warning,
+    })
+    console.log(
+        global.settings.logging
+            ? collectiveManager.logs
+            : `Skipping tick due to low bucket, bucket remaining ${Game.cpu.bucket}`,
+    )
+}
+
+/**
+ * Finds your username
+ */
+export function getMe() {
+    if (Memory.me) return Memory.me
+
+    for (const roomName in Game.rooms) {
+        const room = Game.rooms[roomName]
+        if (!room.controller) continue
+        if (!room.controller.my) continue
+
+        return room.controller.owner.username
+    }
+
+    throw Error('Could not find me')
 }

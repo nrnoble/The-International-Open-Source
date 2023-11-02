@@ -5,7 +5,7 @@ import {
     RoomTypes,
     remoteTypeWeights,
 } from 'international/constants'
-import { findObjectWithID, getRangeXY, randomTick } from 'international/utils'
+import { findObjectWithID, getRangeXY, randomTick } from 'utils/utils'
 
 export class RemoteDismantler extends Creep {
     constructor(creepID: Id<Creep>) {
@@ -26,7 +26,7 @@ export class RemoteDismantler extends Creep {
         return true
     }
 
-    preTickManager() {
+    initRun() {
         if (randomTick() && !this.getActiveBodyparts(MOVE)) this.suicide()
         if (!this.findRemote()) return
 
@@ -57,7 +57,6 @@ export class RemoteDismantler extends Creep {
 
         if (remoteMemory[RoomMemoryKeys.type] !== RoomTypes.remote) return false
         if (remoteMemory[RoomMemoryKeys.commune] !== this.commune.name) return false
-        if (remoteMemory[RoomMemoryKeys.abandonRemote]) return false
 
         return true
     }
@@ -71,14 +70,16 @@ export class RemoteDismantler extends Creep {
         const creepMemory = Memory.creeps[this.name]
 
         const role = 'remoteDismantler'
-        const remoteNamesByEfficacy = this.commune.remoteNamesBySourceEfficacy
+        const remoteNamesByEfficacy = this.commune.roomManager.remoteNamesByEfficacy
 
         // Loop through each remote name
 
         for (const roomName of remoteNamesByEfficacy) {
-            const roomMemory = Memory.rooms[roomName]
+            const remoteMemory = Memory.rooms[roomName]
+            if (remoteMemory[RoomMemoryKeys.type] !== RoomTypes.remote) continue
+            if (remoteMemory[RoomMemoryKeys.commune] !== this.commune.name) continue
 
-            if (roomMemory[RoomMemoryKeys[role]] <= 0) continue
+            if (remoteMemory[RoomMemoryKeys[role]] <= 0) continue
 
             // Otherwise assign the remote to the creep and inform true
 
@@ -135,7 +136,7 @@ export class RemoteDismantler extends Creep {
             }
         }
 
-        const targets = room.dismantleTargets
+        const targets = room.roomManager.dismantleTargets
 
         if (targets.length) {
             target = this.pos.findClosestByPath(targets, { ignoreRoads: true, ignoreCreeps: true })

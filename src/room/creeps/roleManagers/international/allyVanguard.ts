@@ -4,12 +4,24 @@ import {
     RoomMemoryKeys,
     RoomTypes,
     Result,
+    ReservedCoordTypes,
 } from 'international/constants'
-import { findObjectWithID, getRangeXY, getRange } from 'international/utils'
+import { findObjectWithID, getRangeXY, getRange } from 'utils/utils'
 import { unpackCoord } from 'other/codec'
 
 export class AllyVanguard extends Creep {
-    preTickManager() {
+    update() {
+        const packedCoord = Memory.creeps[this.name][CreepMemoryKeys.packedCoord]
+        if (packedCoord) {
+            if (this.isDying()) {
+                this.room.roomManager.reserveCoord(packedCoord, ReservedCoordTypes.dying)
+            } else {
+                this.room.roomManager.reserveCoord(packedCoord, ReservedCoordTypes.important)
+            }
+        }
+    }
+
+    initRun() {
         const request = Memory.workRequests[this.memory[CreepMemoryKeys.taskRoom]]
 
         if (!request) return
@@ -35,7 +47,7 @@ export class AllyVanguard extends Creep {
                 !roomMemory ||
                 roomMemory[RoomMemoryKeys.type] === RoomTypes.enemy ||
                 roomMemory[RoomMemoryKeys.type] === RoomTypes.enemyRemote ||
-                roomMemory[RoomMemoryKeys.type] === RoomTypes.keeper ||
+                roomMemory[RoomMemoryKeys.type] === RoomTypes.sourceKeeper ||
                 roomMemory[RoomMemoryKeys.type] === RoomTypes.ally ||
                 roomMemory[RoomMemoryKeys.type] === RoomTypes.allyRemote
             )
@@ -223,7 +235,7 @@ export class AllyVanguard extends Creep {
                     typeWeights: {
                         [RoomTypes.enemy]: Infinity,
                         [RoomTypes.ally]: Infinity,
-                        [RoomTypes.keeper]: Infinity,
+                        [RoomTypes.sourceKeeper]: Infinity,
                     },
                 }) === Result.fail
             ) {

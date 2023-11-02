@@ -6,15 +6,16 @@ import {
     RoomMemoryKeys,
     RoomTypes,
     defaultDataDecay,
+    maxRemotePathDistance,
 } from 'international/constants'
 import {
     advancedFindDistance,
-    customLog,
     findCarryPartsRequired,
     findLowestScore,
+    getRange,
     randomRange,
     randomTick,
-} from 'international/utils'
+} from 'utils/utils'
 import { unpackPosList } from 'other/codec'
 import { CommuneManager } from './commune'
 import { roomUtils } from 'room/roomUtils'
@@ -26,7 +27,7 @@ export class RemotesManager {
         this.communeManager = communeManager
     }
 
-    public preTickRun() {
+    public initRun() {
         const { room } = this.communeManager
 
         // Loop through the commune's remote names
@@ -59,11 +60,15 @@ export class RemotesManager {
                 continue
             }
 
+            // If we've determined the room to be unusable
+            if (!this.manageUse(remoteName)) continue
+
             // The room is closed or is now a respawn or novice zone
 
             if (
+                randomTick(20) &&
                 Game.map.getRoomStatus(remoteName).status !==
-                Game.map.getRoomStatus(room.name).status
+                    Game.map.getRoomStatus(room.name).status
             ) {
                 this.communeManager.removeRemote(remoteName, index)
                 continue
@@ -110,24 +115,42 @@ export class RemotesManager {
                 if (
                     isReserved &&
                     remote.controller.reservation.ticksToEnd >=
-                        Math.min(
-                            remoteMemory[RoomMemoryKeys.remoteControllerPath].length *
-                                packedPosLength *
-                                5,
-                            2500,
+                        Math.max(
+                            (remoteMemory[RoomMemoryKeys.remoteControllerPath].length /
+                                packedPosLength) *
+                                3,
+                            500,
                         )
-                )
+                ) {
                     remoteMemory[RoomMemoryKeys.remoteReserver] = 0
+                }
             }
 
             if (remote) {
+                const sourceContainers = remote.roomManager.sourceContainers
+                const remoteSources = remote.roomManager.remoteSources
+                for (const i in remoteSources) {
+                    remoteMemory[RoomMemoryKeys.remoteSourceCredit][i] = 0
+
+                    const source = remoteSources[i]
+                    const container = sourceContainers[i]
+                    if (container) {
+                        remoteMemory[RoomMemoryKeys.remoteSourceCredit][i] += container.store.energy
+                    }
+
+                    for (const resource of remote.roomManager.droppedEnergy) {
+                        if (getRange(resource.pos, source.pos) > 1) continue
+
+                        remoteMemory[RoomMemoryKeys.remoteSourceCredit][i] += resource.amount
+                    }
+                }
                 /*
                 remoteMemory[RoomMemoryKeys.minDamage] = 0
-                remoteMemory[RoomMemory\google-sheets\flowchartKeys.minHeal] = 0
+                remoteMemory[RoomMemoryKeys.minHeal] = 0
 
                 // Increase the defenderNeed according to the enemy attackers' combined strength
 
-                for (const enemyCreep of remote.enemyCreeps) {
+                for (const enemyCreep of remote.roomManager.notMyCreeps.enemy) {
                     remoteMemory[RoomMemoryKeys.minDamage] +=
                         enemyCreep.combatStrength.heal + enemyCreep.combatStrength.heal * enemyCreep.defenceStrength ||
                         Math.max(Math.floor(enemyCreep.hits / 20), 1)
@@ -136,14 +159,13 @@ export class RemotesManager {
 
                 // Record if we have or don't have a source container for each source
 
-                const sourceContainers = remote.sourceContainers
                 for (const i in sourceContainers) {
                     remoteMemory[RoomMemoryKeys.hasContainer][i] = !!sourceContainers
                 }
 
                 // Temporary measure while DynamicSquads are in progress
 
-                const enemyAttackers = remote.enemyAttackers
+                const enemyAttackers = remote.roomManager.enemyAttackers
                 if (enemyAttackers.length) {
                     const score = findLowestScore(enemyAttackers, creep => {
                         return creep.ticksToLive
@@ -172,31 +194,38 @@ export class RemotesManager {
                 // Create need if there are any structures that need to be removed
 
                 remoteMemory[RoomMemoryKeys.remoteDismantler] = Math.min(
-                    remote.dismantleTargets.length,
+                    remote.roomManager.dismantleTargets.length,
                     8,
                 )
             }
 
             for (const i in remoteMemory[RoomMemoryKeys.remoteSources]) {
+                const remoteSourcePathLength =
+                    remoteMemory[this.communeManager.remoteResourcePathType].length /
+                    packedPosLength
                 const hasContainer = remoteMemory[RoomMemoryKeys.hasContainer][i]
                 if (hasContainer) {
+                    // account for repair cost for container
+
                     const creditChange = CONTAINER_DECAY / (CONTAINER_DECAY_TIME * REPAIR_POWER)
-                    if (remoteMemory[RoomMemoryKeys.remoteSourceCredit][i] > 0) {
-                        remoteMemory[RoomMemoryKeys.remoteSourceCredit][i] -= creditChange
-                    }
+
+                    remoteMemory[RoomMemoryKeys.remoteSourceCredit][i] -=
+                        creditChange * remoteSourcePathLength
+
                     remoteMemory[RoomMemoryKeys.remoteSourceCreditChange][i] -= creditChange
                     remoteMemory[RoomMemoryKeys.maxSourceIncome][i] -= creditChange
                     continue
                 }
 
-                // We don't have a container
+                // We don't have a container, account for decay cost
 
                 const creditChange = Math.ceil(
                     remoteMemory[RoomMemoryKeys.remoteSourceCredit][i] / ENERGY_DECAY,
                 )
-                if (remoteMemory[RoomMemoryKeys.remoteSourceCredit][i] > 0) {
-                    remoteMemory[RoomMemoryKeys.remoteSourceCredit][i] -= creditChange
-                }
+
+                remoteMemory[RoomMemoryKeys.remoteSourceCredit][i] -=
+                    creditChange * remoteSourcePathLength
+
                 remoteMemory[RoomMemoryKeys.remoteSourceCreditChange][i] -= creditChange
                 remoteMemory[RoomMemoryKeys.maxSourceIncome][i] -= creditChange
             }
@@ -250,8 +279,9 @@ export class RemotesManager {
                 // Find the number of carry parts required for the source, and add it to the remoteHauler need
 
                 remoteMemory[RoomMemoryKeys.remoteHaulers][sourceIndex] += findCarryPartsRequired(
-                    remoteMemory[RoomMemoryKeys.remoteSourceFastFillerPaths][sourceIndex].length /
-                        packedPosLength,
+                    (remoteMemory[RoomMemoryKeys.remoteSourceFastFillerPaths][sourceIndex].length /
+                        packedPosLength) *
+                        2,
                     income,
                 )
             }
@@ -293,6 +323,24 @@ export class RemotesManager {
         remoteMemory[RoomMemoryKeys.disableCachedPaths] = false
     }
 
+    /**
+     * true = continue use
+     * false = stop use
+     */
+    private manageUse(remoteName: string): boolean {
+        const roomMemory = Memory.rooms[remoteName]
+        if (!randomTick(20) && roomMemory[RoomMemoryKeys.disable]) return false
+
+        let disabledSources = this.manageMaxDistance(remoteName)
+        if (disabledSources >= roomMemory[RoomMemoryKeys.remoteSources].length) {
+            roomMemory[RoomMemoryKeys.disable] = true
+            return false
+        }
+
+        roomMemory[RoomMemoryKeys.disable] = undefined
+        return true
+    }
+
     private manageAbandonment(remoteName: string) {
         const remoteMemory = Memory.rooms[remoteName]
 
@@ -317,18 +365,44 @@ export class RemotesManager {
     private recurseAbandonment(remoteName: string) {
         const remoteMemory = Memory.rooms[remoteName]
 
-        for (const remoteName2 of remoteMemory[RoomMemoryKeys.pathsThrough]) {
+        for (const remoteName2 of Memory.rooms[this.communeManager.room.name][
+            RoomMemoryKeys.remotes
+        ]) {
             const remoteMemory2 = Memory.rooms[remoteName2]
+
+            // No point in abandoning if the remote is already sufficiently abandoned
             if (
                 remoteMemory2[RoomMemoryKeys.abandonRemote] >=
                 remoteMemory[RoomMemoryKeys.abandonRemote]
             )
                 continue
+            console.log(remoteName2)
+            // We want to abandon if the remote paths through the specified remote
+            if (!remoteMemory2[RoomMemoryKeys.pathsThrough].includes(remoteName)) continue
 
             roomUtils.abandonRemote(remoteName2, remoteMemory[RoomMemoryKeys.abandonRemote])
-            this.recurseAbandonment(remoteName2)
         }
 
         remoteMemory[RoomMemoryKeys.recursedAbandonment] = true
+    }
+
+    private manageMaxDistance(remoteName: string) {
+        let disabledSources = 0
+        const roomMemory = Memory.rooms[remoteName]
+
+        // Also do for: roomMemory[RoomMemoryKeys.remoteSourceFastFillerPaths]
+
+        for (const index in roomMemory[RoomMemoryKeys.remoteSourceHubPaths]) {
+            const path = roomMemory[RoomMemoryKeys.remoteSourceHubPaths][index]
+
+            if (path.length / packedPosLength <= maxRemotePathDistance) {
+                continue
+            }
+
+            disabledSources += 1
+            roomMemory[RoomMemoryKeys.disableSources][index] = true
+        }
+
+        return disabledSources
     }
 }

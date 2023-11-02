@@ -1,8 +1,6 @@
 import { packCoord } from 'other/codec'
 import { collectiveManager } from './collective'
 
-export type PlayerRelationship = 'ally' | 'enemy'
-
 export enum PlayerMemoryKeys {
     /**
      * Generally how good their offense is
@@ -19,7 +17,7 @@ export enum PlayerMemoryKeys {
     /**
      * The last time we were attacked by them
      */
-    lastAttacked,
+    lastAttackedBy,
     /**
      * the positive, non-zero value for which to weight enemy exit retreat threat
      */
@@ -30,6 +28,10 @@ export enum PlayerMemoryKeys {
      * Effects response to ally requests and such
      */
     reputation,
+    /**
+     * The last time this player was seen. Used for garbage collection, to remove old players
+     */
+    lastSeen,
 }
 
 export const playerDecayKeys = new Set([
@@ -109,6 +111,25 @@ export enum CreepRoomLogisticsRequestKeys {
     noReserve,
 }
 
+export enum RoomLogisticsRequestTypes {
+    /**
+     * Asks for resources to be transferred
+     */
+    transfer,
+    /**
+     * Asks for resources to be withdrawn
+     */
+    withdraw,
+    /**
+     * A dropped resource asking to be picked up
+     */
+    pickup,
+    /**
+     * Offering to be picked up but not trying to get rid of the resource
+     */
+    offer,
+}
+
 export type SleepFor = 'any' | 'noMove'
 
 export enum CreepMemoryKeys {
@@ -175,8 +196,8 @@ export enum RoomTypes {
     neutral,
     enemy,
     enemyRemote,
-    keeper,
-    keeperCenter,
+    sourceKeeper,
+    center,
     highway,
     intersection,
 }
@@ -188,6 +209,7 @@ export enum RoomMemoryKeys {
      * Tells (mostly civilians) if the room is safe (non-undefined number) and what tick it will refresh
      */
     danger,
+    portalsTo,
 
     // Types specific
 
@@ -230,7 +252,7 @@ export enum RoomMemoryKeys {
     haulRequests,
     nukeRequest,
     threatened,
-    lastAttacked,
+    lastAttackedBy,
     minHaulerCost,
     minHaulerCostUpdate,
     greatestRCL,
@@ -254,7 +276,8 @@ export enum RoomMemoryKeys {
     remoteDismantler,
     abandonRemote,
     recursedAbandonment,
-    use,
+    disable,
+    disableSources,
     enemyReserved,
     invaderCore,
     disableCachedPaths,
@@ -289,10 +312,14 @@ export enum RoomMemoryKeys {
     defensiveStrength,
     offensiveThreat,
 
-    // Intersection
+    // Source Keeper
 
-    portalsTo,
+    keeperLairCoords,
 }
+
+export type RemoteResourcePathTypes =
+    | RoomMemoryKeys.remoteSourceFastFillerPaths
+    | RoomMemoryKeys.remoteSourceHubPaths
 
 // General
 
@@ -307,7 +334,7 @@ export const roomTypeProperties: Set<keyof RoomMemory> = new Set([
     RoomMemoryKeys.minHaulerCost,
     RoomMemoryKeys.minHaulerCostUpdate,
     RoomMemoryKeys.threatened,
-    RoomMemoryKeys.lastAttacked,
+    RoomMemoryKeys.lastAttackedBy,
     RoomMemoryKeys.abandonCommune,
     RoomMemoryKeys.score,
     RoomMemoryKeys.dynamicScore,
@@ -325,6 +352,7 @@ export const roomTypeProperties: Set<keyof RoomMemory> = new Set([
     RoomMemoryKeys.abandonRemote,
     RoomMemoryKeys.recursedAbandonment,
     RoomMemoryKeys.pathsThrough,
+    RoomMemoryKeys.disableSources,
 
     // Ally and Enemy
 
@@ -339,8 +367,6 @@ export const roomTypeProperties: Set<keyof RoomMemory> = new Set([
     RoomMemoryKeys.energy,
     RoomMemoryKeys.offensiveThreat,
     RoomMemoryKeys.defensiveStrength,
-
-    RoomMemoryKeys.portalsTo,
 ])
 
 export const roomTypes: Record<RoomTypes, Set<keyof RoomMemory>> = {
@@ -351,7 +377,7 @@ export const roomTypes: Record<RoomTypes, Set<keyof RoomMemory>> = {
         RoomMemoryKeys.minHaulerCost,
         RoomMemoryKeys.minHaulerCostUpdate,
         RoomMemoryKeys.threatened,
-        RoomMemoryKeys.lastAttacked,
+        RoomMemoryKeys.lastAttackedBy,
         RoomMemoryKeys.abandonCommune,
         RoomMemoryKeys.score,
         RoomMemoryKeys.dynamicScore,
@@ -383,15 +409,15 @@ export const roomTypes: Record<RoomTypes, Set<keyof RoomMemory>> = {
     ]),
     [RoomTypes.enemyRemote]: new Set([RoomMemoryKeys.owner]),
     [RoomTypes.neutral]: new Set([]),
-    [RoomTypes.keeper]: new Set([RoomMemoryKeys.owner]),
-    [RoomTypes.keeperCenter]: new Set([RoomMemoryKeys.owner]),
+    [RoomTypes.intersection]: new Set([]),
+    [RoomTypes.sourceKeeper]: new Set([RoomMemoryKeys.owner, RoomMemoryKeys.keeperLairCoords]),
+    [RoomTypes.center]: new Set([RoomMemoryKeys.owner]),
     [RoomTypes.highway]: new Set([]),
-    [RoomTypes.intersection]: new Set([RoomMemoryKeys.portalsTo]),
 }
 
 export const constantRoomTypes: Set<Partial<RoomTypes>> = new Set([
-    RoomTypes.keeper,
-    RoomTypes.keeperCenter,
+    RoomTypes.sourceKeeper,
+    RoomTypes.center,
     RoomTypes.highway,
     RoomTypes.intersection,
 ])
@@ -495,28 +521,32 @@ export const version = `v2.${global.settings.breakingVersion}.0`
 
 // Set of messages to randomly apply to commune rooms
 
-export const communeSign = 'A commune of the proletariat. Bourgeoisie not welcome here! ' + version
+export const communeSign =
+    'A commune of the proletariat. Bourgeoisie not welcome here! Now Collectivized. ' + version
 
-// Set of messages to randomly apply to non-commune rooms
-
+/**
+ * Set of messages to randomly apply to non-commune rooms
+ */
 export const nonCommuneSigns = [
     'The top 1% have more money than the poorest 4.5 billion',
     'McDonalds workers in the US make $10/hour. In Denmark, as a result of unions, they make $22/hour',
     'We have democracy in our policial system, should we not have it in our companies too?',
     'Workers of the world, unite; you have nothing to lose but your chains!',
-    'Real democracy requires democracy in the workplace - Richard Wolff',
+    'Real democracy requires democracy in the workplace',
     'Adults spend a combined 13 years of their life under a dictatorship: the workplace',
     'Socialism is about worker ownership over the workplace',
-    'Are trans women women? Yes. Obviously.',
+    'Are trans women women? Yes.',
     'Advancing the LGBTQ+ agenda <3',
     'Does Jeff Bezos work 56,000 times harder than his average worker? Because he gets paid like it',
+    'We already eat from the trashcan all the time. The name of this trash is ideology - Slavoj Zizek',
+    'Religion is the opium of the people - Karl Marx',
 ]
 
 export const chant = [
     'Creeps',
     'of',
     Game.shard.name,
-    'unite',
+    'unite,',
     'you',
     'have',
     'nothing',
@@ -525,6 +555,14 @@ export const chant = [
     'but',
     'your',
     'chains!',
+    undefined,
+    'PEACE',
+    'LAND',
+    'ENERGY',
+    undefined,
+    'Democracy',
+    'is non-',
+    'negotiable!',
     undefined,
 ]
 /**
@@ -650,6 +688,18 @@ export const storingStructureTypesSet: Set<StructureConstant> = new Set([
 export const ourImpassibleStructures = impassibleStructureTypes.concat(STRUCTURE_RAMPART)
 export const ourImpassibleStructuresSet = new Set(ourImpassibleStructures)
 
+export const combatTargetStructureTypes: Set<StructureConstant> = new Set([
+    STRUCTURE_SPAWN,
+    STRUCTURE_TOWER,
+    STRUCTURE_EXTENSION,
+    STRUCTURE_STORAGE,
+    STRUCTURE_TERMINAL,
+    STRUCTURE_POWER_SPAWN,
+    STRUCTURE_FACTORY,
+    STRUCTURE_NUKER,
+    STRUCTURE_OBSERVER,
+])
+
 export const customColors = {
     white: '#ffffff',
     lightGrey: '#eaeaea',
@@ -658,7 +708,7 @@ export const customColors = {
     lightBlue: '#0f66fc',
     darkBlue: '#02007d',
     black: '#000000',
-    yellow: '#d8f100',
+    yellow: '#ABB400',
     red: '#d10000',
     green: '#00d137',
     brown: '#aa7253',
@@ -1210,6 +1260,14 @@ export const terminalResourceTargets: Partial<{ [key in ResourceConstant]: Resou
             return communeManager.storingStructuresCapacity * 0.01
         },
     },
+    [RESOURCE_COMPOSITE]: {
+        min: function (communeManager) {
+            return 0
+        },
+        max: function (communeManager) {
+            return communeManager.storingStructuresCapacity * 0.01
+        },
+    },
 }
 
 export const antifaRoles: (
@@ -1260,12 +1318,6 @@ export const relayRoles: Set<CreepRoles> = new Set(['hauler', 'remoteHauler'])
  * Used to modify the remaining bucket amount, resulting in the default cacheAmount for moveRequests
  */
 export const cacheAmountModifier = 25
-
-export const UNWALKABLE = -1
-export const NORMAL = 0
-export const PROTECTED = 1
-export const TO_EXIT = 2
-export const EXIT = 3
 
 /**
  * Which structures should be safemoded when attacked
@@ -1467,6 +1519,8 @@ export enum Result {
 }
 
 export const maxRemoteRoomDistance = 5
+// Past this it's probably not efficient
+export const maxRemotePathDistance = 250
 export const offsetsByDirection = [
     ,
     [0, -1],
@@ -1482,7 +1536,7 @@ export const offsetsByDirection = [
 export const towerPowers = [PWR_OPERATE_TOWER, PWR_DISRUPT_TOWER]
 
 export const remoteTypeWeights: Partial<{ [key: string]: number }> = {
-    [RoomTypes.keeper]: Infinity,
+    [RoomTypes.sourceKeeper]: Infinity,
     [RoomTypes.enemy]: Infinity,
     [RoomTypes.enemyRemote]: Infinity,
     [RoomTypes.ally]: Infinity,
@@ -1521,7 +1575,7 @@ export const partsByPriorityPartType: { [key in PartsByPriority]: BodyPartConsta
 
 export const rangedMassAttackMultiplierByRange = [1, 1, 0.4, 0.1]
 
-export enum RoomStatNamesEnum {
+export enum RoomStatsKeys {
     ControllerLevel = 'cl',
     EnergyInputHarvest = 'eih',
     EnergyInputBought = 'eib',
@@ -1539,21 +1593,7 @@ export enum RoomStatNamesEnum {
     TotalCreepCount = 'tcc',
     PowerCreepCount = 'pcc',
     SpawnUsagePercentage = 'su',
-    AllyCreepRequestManangerCPUUsage = 'acrmcu',
-    WorkRequestManagerCPUUsage = 'clrmcu',
-    TowerManagerCPUUsage = 'tmcu',
-    SpawnManagerCPUUsage = 'smcu',
-    CombatRequestManagerCPUUsage = 'cormcu',
-    DefenceManagerCPUUsage = 'dmcu',
-    SpawnRequestsManagerCPUUsage = 'srmcu',
-    RoomCPUUsage = 'rocu',
-    RoomVisualsManagerCPUUsage = 'rvmcu',
-    ConstructionManagerCPUUsage = 'cmcu',
-    RoleManagerCPUUsage = 'rolmcu',
-    RoleManagerPerCreepCPUUsage = 'rolmpccu',
-    EndTickCreepManagerCPUUsage = 'etcmcu',
-    PowerRoleManagerCPUUsage = 'prmcu',
-    PowerRoleManagerPerCreepCPUUsage = 'prmpccu',
+    MinHaulerCost = 'mhc',
 
     GameTime = 'gt',
     RemoteCount = 'rc',
@@ -1561,24 +1601,6 @@ export enum RoomStatNamesEnum {
     RemoteEnergyInputHarvest = 'reih',
     RemoteEnergyOutputRepairOther = 'reoro',
     RemoteEnergyOutputBuild = 'reob',
-    RemoteRoomCPUUsage = 'rrocu',
-    RemoteRoomVisualsManagerCPUUsage = 'rrvmcu',
-    RemoteConstructionManagerCPUUsage = 'rcmcu',
-    RemoteRoleManagerCPUUsage = 'rrolmcu',
-    RemoteRoleManagerPerCreepCPUUsage = 'rrolmpccu',
-    RemoteEndTickCreepManagerCPUUsage = 'retcmcu',
-    RemotePowerRoleManangerCPUUsage = 'rprmcu',
-    RemotePowerRoleManagerPerCreepCPUUsage = 'rprmpccu',
-}
-
-export enum InternationalStatNamesEnum {
-    CollectiveManagerCPUUsage = 'imcu',
-    CreepOrganizerCPUUsage = 'cocu',
-    MapVisualsManangerCPUUsage = 'mvmcu',
-    PowerCreepOrganizerCPUUsage = 'pccu',
-    TickInitCPUUsage = 'tccu',
-    RoomManagerCPUUsage = 'roomcu',
-    StatsManagerCPUUsage = 'smcu',
 }
 
 export const packedPosLength = 3
@@ -1651,3 +1673,46 @@ export const maxControllerLevel = 8
 export const preferredCommuneRange = 5.5
 export const defaultDataDecay = 0.99999
 export const revolutionary = 'MarvinTMB'
+export const maxSegmentsOpen = 10
+
+/**
+ * Non-zero types of reserved registered coordinates
+ */
+export enum ReservedCoordTypes {
+    /**
+     * The creep is trying to spawn onto this coord
+     */
+    spawning,
+    /**
+     * The notable reserved coord reserver is dying
+     */
+    dying,
+    /**
+     * Probably a more temporary reserved coord that need not be considered in all situations
+     */
+    normal,
+    /**
+     * Probably a more permanent reserved coord that should be considered in more situations
+     */
+    important,
+    /**
+     * Probably a position very important to combat related coordinate reservation
+     */
+    necessary,
+}
+
+/**
+ * Types of work intents
+ */
+export enum WorkTypes {
+    harvest,
+    repair,
+    build,
+    upgrade,
+    dismantle,
+    heal,
+    attack,
+    attackController,
+}
+
+export const codecCacheLength = 99999

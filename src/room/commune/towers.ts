@@ -1,7 +1,11 @@
-import { PlayerMemoryKeys, customColors, towerPowers } from 'international/constants'
-import { updateStat } from 'international/statsManager'
 import {
-    customLog,
+    PlayerMemoryKeys,
+    RoomLogisticsRequestTypes,
+    customColors,
+    towerPowers,
+} from 'international/constants'
+import { statsManager } from 'international/statsManager'
+import {
     findHighestScore,
     findObjectWithID,
     findWeightedRangeFromExit,
@@ -11,7 +15,7 @@ import {
     isXYInBorder,
     randomTick,
     scalePriority,
-} from 'international/utils'
+} from 'utils/utils'
 import { packCoord } from 'other/codec'
 import { CommuneManager } from './commune'
 import { playerManager } from 'international/players'
@@ -28,13 +32,10 @@ export class TowerManager {
 
     run() {
         const { room } = this.communeManager
-        // If CPU logging is enabled, get the CPU used at the start
-
-        if (global.settings.CPULogging) var managerCPUStart = Game.cpu.getUsed()
 
         const towers = room.roomManager.structures.tower.filter(tower => tower.RCLActionable)
         if (!towers.length) {
-            room.towerInferiority = room.enemyCreeps.length > 0
+            room.towerInferiority = room.roomManager.notMyCreeps.enemy.length > 0
             return
         }
 
@@ -52,29 +53,17 @@ export class TowerManager {
 
         this.createRoomLogisticsRequests()
 
-        if (!this.attackEnemyCreeps()) return
-        if (!this.healCreeps()) return
-        if (!this.repairRamparts()) return
-        if (!this.repairGeneral()) return
-
-        // If CPU logging is enabled, log the CPU used by this manager
-
-        if (global.settings.CPULogging) {
-            const cpuUsed = Game.cpu.getUsed() - managerCPUStart
-            customLog('Tower Manager', cpuUsed.toFixed(2), {
-                textColor: customColors.white,
-                bgColor: customColors.lightBlue,
-            })
-            const statName: RoomCommuneStatNames = 'tmcu'
-            updateStat(room.name, statName, cpuUsed)
-        }
+        if (this.attackEnemyCreeps()) return
+        if (this.healCreeps()) return
+        if (this.repairRamparts()) return
+        if (this.repairGeneral()) return
     }
 
     private trackEnemySquads() {}
 
     private findAttackTarget() {
         const { room } = this.communeManager
-        const enemyCreeps = room.enemyCreeps
+        const enemyCreeps = room.roomManager.notMyCreeps.enemy
 
         if (!this.communeManager.towerAttackTarget) {
             const [score, target] = findWithHighestScore(enemyCreeps, enemyCreep => {
@@ -122,18 +111,17 @@ export class TowerManager {
     }
 
     private attackEnemyCreeps() {
-        if (this.communeManager.room.flags.disableTowerAttacks) {
+        if (Game.flags.disableTowerAttacks) {
             this.communeManager.room.towerInferiority =
-                this.communeManager.room.enemyAttackers.length > 0
-            return true
+                this.communeManager.room.roomManager.enemyAttackers.length > 0
+            return false
         }
         if (!this.actionableTowerIDs.length) return false
-        if (!this.communeManager.room.enemyCreeps.length) return false
+        if (!this.communeManager.room.roomManager.notMyCreeps.enemy.length) return false
 
         const attackTarget = this.findAttackTarget()
         if (!attackTarget) {
-            this.scatterShot()
-            return true
+            return this.scatterShot()
         }
 
         for (let i = this.actionableTowerIDs.length - 1; i >= 0; i--) {
@@ -143,11 +131,8 @@ export class TowerManager {
 
             this.actionableTowerIDs.splice(i, 1)
 
-            const hits = (attackTarget.reserveHits -= towerFunctions.estimateDamageNet(
-                tower,
-                attackTarget,
-            ))
-            if (hits <= 0) return true
+            attackTarget.reserveHits -= towerFunctions.estimateDamageNet(tower, attackTarget)
+            if (attackTarget.reserveHits <= 0) return true
         }
 
         return true
@@ -158,11 +143,11 @@ export class TowerManager {
      * Maybe we can mess up healing
      */
     scatterShot() {
-        if (this.actionableTowerIDs.length <= 1) return
-        if (!randomTick(200)) return
+        if (this.actionableTowerIDs.length <= 1) return false
+        if (!randomTick(200)) return false
 
-        const enemyCreeps = this.communeManager.room.enemyCreeps
-        if (enemyCreeps.length < 4) return
+        const enemyCreeps = this.communeManager.room.roomManager.notMyCreeps.enemy
+        if (enemyCreeps.length < Math.min(4, this.actionableTowerIDs.length)) return false
 
         let targetIndex = 0
 
@@ -182,14 +167,18 @@ export class TowerManager {
 
             targetIndex += 1
         }
+
+        return true
     }
 
     findHealTarget() {
         const { room } = this.communeManager
 
-        if (room.enemyAttackers.length) {
-            return room.myDamagedCreeps.find(creep => {
-                return !creep.isOnExit && !room.enemyThreatCoords.has(packCoord(creep.pos))
+        if (room.roomManager.enemyAttackers.length) {
+            return room.roomManager.myDamagedCreeps.find(creep => {
+                return (
+                    !creep.isOnExit && !room.roomManager.enemyThreatCoords.has(packCoord(creep.pos))
+                )
             })
         }
 
@@ -197,8 +186,8 @@ export class TowerManager {
 
         // Construct heal targets from my and allied damaged creeps in the this
 
-        healTargets = room.myDamagedCreeps.concat(room.allyDamagedCreeps)
-        healTargets = healTargets.concat(room.myDamagedPowerCreeps)
+        healTargets = room.roomManager.myDamagedCreeps.concat(room.roomManager.allyDamagedCreeps)
+        healTargets = healTargets.concat(room.roomManager.myDamagedPowerCreeps)
 
         return healTargets.find(creep => !creep.isOnExit)
     }
@@ -207,7 +196,7 @@ export class TowerManager {
         if (!this.actionableTowerIDs.length) return false
 
         const healTarget = this.findHealTarget()
-        if (!healTarget) return true
+        if (!healTarget) return false
 
         for (let i = this.actionableTowerIDs.length - 1; i >= 0; i--) {
             const tower = findObjectWithID(this.actionableTowerIDs[i])
@@ -222,16 +211,16 @@ export class TowerManager {
 
     private findRampartRepairTarget() {
         const { room } = this.communeManager
-        const ramparts = room.enemyAttackers.length
+        const ramparts = room.roomManager.enemyAttackers.length
             ? room.communeManager.defensiveRamparts
             : room.communeManager.rampartRepairTargets
 
         const [score, rampart] = findWithLowestScore(ramparts, rampart => {
             let score = rampart.hits
             // Account for decay amount: percent of time to decay times decay amount
-            score += Math.floor(
-                RAMPART_DECAY_AMOUNT *
-                    (RAMPART_DECAY_TIME - rampart.ticksToDecay / RAMPART_DECAY_TIME),
+            score -= Math.floor(
+                (RAMPART_DECAY_AMOUNT * (RAMPART_DECAY_TIME - rampart.ticksToDecay)) /
+                    RAMPART_DECAY_TIME,
             )
 
             return score
@@ -254,7 +243,7 @@ export class TowerManager {
             const tower = findObjectWithID(this.actionableTowerIDs[i])
             if (tower.repair(repairTarget) !== OK) continue
 
-            updateStat(this.communeManager.room.name, 'eorwr', TOWER_ENERGY_COST)
+            statsManager.updateStat(this.communeManager.room.name, 'eorwr', TOWER_ENERGY_COST)
             this.actionableTowerIDs.splice(i, 1)
         }
 
@@ -270,10 +259,10 @@ export class TowerManager {
 
     private repairGeneral() {
         if (!this.actionableTowerIDs.length) return false
-        if (!randomTick(100)) return true
+        if (!randomTick(100)) return false
 
         const structures = this.findGeneralRepairTargets()
-        if (!structures.length) return true
+        if (!structures.length) return false
 
         for (let i = this.actionableTowerIDs.length - 1; i >= 0; i--) {
             const tower = findObjectWithID(this.actionableTowerIDs[i])
@@ -305,13 +294,12 @@ export class TowerManager {
             if (structure.usedReserveStore < structure.store.getCapacity(RESOURCE_ENERGY) * 0.8) {
                 this.communeManager.room.createRoomLogisticsRequest({
                     target: structure,
-                    type: 'transfer',
-                    priority:
-                        3 +
-                        scalePriority(
-                            structure.store.getCapacity(RESOURCE_ENERGY),
-                            structure.reserveStore.energy,
-                        ),
+                    type: RoomLogisticsRequestTypes.transfer,
+                    priority: scalePriority(
+                        structure.store.getCapacity(RESOURCE_ENERGY),
+                        structure.reserveStore.energy,
+                        20,
+                    ),
                 })
             }
 
@@ -322,7 +310,7 @@ export class TowerManager {
                     target: structure,
                     maxAmount: structure.usedReserveStore - 100,
                     /* onlyFull: true, */
-                    type: 'offer',
+                    type: RoomLogisticsRequestTypes.offer,
                     priority: scalePriority(
                         structure.store.getCapacity(RESOURCE_ENERGY),
                         structure.usedReserveStore,

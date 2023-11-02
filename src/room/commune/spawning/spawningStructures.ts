@@ -1,19 +1,24 @@
 import {
     CreepMemoryKeys,
+    ReservedCoordTypes,
+    RoomLogisticsRequestTypes,
     customColors,
     offsetsByDirection,
     partsByPriority,
     partsByPriorityPartType,
 } from 'international/constants'
 import { collectiveManager } from 'international/collective'
-import { updateStat } from 'international/statsManager'
-import { customLog, findAdjacentCoordsToCoord, getRange, newID } from 'international/utils'
-import { unpackPosAt } from 'other/codec'
+import { statsManager } from 'international/statsManager'
+import { LogTypes, customLog } from 'utils/logging'
+import { findAdjacentCoordsToCoord, getRange, newID } from 'utils/utils'
+import { packCoord, unpackPosAt } from 'other/codec'
 import { CommuneManager } from '../commune'
-import './spawn'
+import './spawnUtils'
 import './spawnRequests'
-import { spawnFunctions } from './spawn'
+import { spawnUtils } from './spawnUtils'
 import { Dashboard, Rectangle, Table } from 'screeps-viz'
+import { debugUtils } from 'debug/debugUtils'
+import { SpawnRequest, SpawnRequestArgs } from 'types/spawnRequest'
 
 export class SpawningStructuresManager {
     communeManager: CommuneManager
@@ -54,7 +59,12 @@ export class SpawningStructuresManager {
                     creep.memory[CreepMemoryKeys.path] &&
                     creep.memory[CreepMemoryKeys.path].length
                 ) {
-                    creep.assignMoveRequest(unpackPosAt(creep.memory[CreepMemoryKeys.path]))
+                    const coord = unpackPosAt(creep.memory[CreepMemoryKeys.path])
+                    this.communeManager.room.roomManager.reservedCoords.set(
+                        packCoord(coord),
+                        ReservedCoordTypes.spawning,
+                    )
+                    creep.assignMoveRequest(coord)
                 }
 
                 this.activeSpawns.push(spawn)
@@ -66,10 +76,6 @@ export class SpawningStructuresManager {
     }
 
     public run() {
-        const { room } = this.communeManager
-        // If CPU logging is enabled, get the CPU used at the start
-
-        if (global.settings.CPULogging) var managerCPUStart = Game.cpu.getUsed()
         // There are no spawns
         if (!this.communeManager.room.roomManager.structures.spawn.length) return
 
@@ -77,22 +83,13 @@ export class SpawningStructuresManager {
         this.test()
         this.runSpawning()
 
-        if (global.settings.CPULogging === true) {
-            const cpuUsed = Game.cpu.getUsed() - managerCPUStart
-            customLog('Spawn Manager', cpuUsed.toFixed(2), {
-                textColor: customColors.white,
-                bgColor: customColors.lightBlue,
-            })
-            const statName: RoomCommuneStatNames = 'smcu'
-            updateStat(room.name, statName, cpuUsed)
-        }
+        // Clear out potentially active and stale spawnRequests
+        this.spawnRequests = undefined
     }
 
     private runSpawning() {
         // There are no spawns that we can spawn with (they are probably spawning something)
         if (!this.inactiveSpawns.length) {
-            // Clear out potentially active and stale spawnRequests
-            delete this.spawnRequests
             return
         }
 
@@ -101,9 +98,9 @@ export class SpawningStructuresManager {
             this.communeManager.spawnRequestsManager.run()
 
         this.spawnIndex = this.inactiveSpawns.length - 1
-        this.spawnRequests = []
 
         for (const spawnRequestArgs of this.communeManager.spawnRequestsArgs) {
+            this.spawnRequests = []
             this.constructSpawnRequests(spawnRequestArgs)
 
             // Loop through priorities inside requestsByPriority
@@ -111,9 +108,6 @@ export class SpawningStructuresManager {
             for (let i = 0; i < this.spawnRequests.length; i++) {
                 if (!this.runSpawnRequest(i)) return
             }
-
-            // Reset spawnRequests for next set of args translation
-            this.spawnRequests = []
         }
     }
 
@@ -125,13 +119,12 @@ export class SpawningStructuresManager {
 
         if (request.cost > this.communeManager.room.energyCapacityAvailable) {
             customLog(
-                'Failed to spawn',
+                'Failed to spawn: not enough energy',
                 `cost greater then energyCapacityAvailable, role: ${request.role}, cost: ${
                     this.communeManager.room.energyCapacityAvailable
                 } / ${request.cost}, body: ${JSON.stringify(request.bodyPartCounts)}`,
                 {
-                    textColor: customColors.white,
-                    bgColor: customColors.red,
+                    type: LogTypes.warning,
                 },
             )
 
@@ -140,13 +133,12 @@ export class SpawningStructuresManager {
 
         if (request.cost > this.communeManager.nextSpawnEnergyAvailable) {
             customLog(
-                'Failed to spawn',
+                'Failed to spawn: not enough energy',
                 `cost greater then nextSpawnEnergyAvailable, role: ${request.role}, cost: ${
                     this.communeManager.nextSpawnEnergyAvailable
                 } / ${request.cost}, body: ${JSON.stringify(request.bodyPartCounts)}`,
                 {
-                    textColor: customColors.white,
-                    bgColor: customColors.red,
+                    type: LogTypes.warning,
                 },
             )
             return false
@@ -161,7 +153,7 @@ export class SpawningStructuresManager {
 
         // See if creep can be spawned
 
-        const testSpawnResult = spawnFunctions.testSpawn(spawn, request, ID)
+        const testSpawnResult = spawnUtils.testSpawn(spawn, request, ID)
 
         // If creep can't be spawned
 
@@ -169,11 +161,10 @@ export class SpawningStructuresManager {
             // Log the error and stop the loop
 
             customLog(
-                'Failed to spawn',
-                `error: ${testSpawnResult}, role: ${request.role}, cost: ${request.cost}, body: (${request.body.length}) ${request.body}`,
+                'Failed to spawn: dryrun failed',
+                `request: ${testSpawnResult}, role: ${request.role}, cost: ${request.cost}, body: (${request.body.length}) ${request.body}`,
                 {
-                    textColor: customColors.white,
-                    bgColor: customColors.red,
+                    type: LogTypes.error,
                 },
             )
 
@@ -183,12 +174,24 @@ export class SpawningStructuresManager {
         // Spawn the creep for real
 
         request.extraOpts.directions = this.findDirections(spawn.pos)
-        spawnFunctions.advancedSpawn(spawn, request, ID)
+        const result = spawnUtils.advancedSpawn(spawn, request, ID)
+        if (result !== OK) {
+            customLog(
+                'Failed to spawn: spawning failed',
+                `error: ${result}, request: ${debugUtils.stringify(request)}`,
+                {
+                    type: LogTypes.error,
+                    position: 3,
+                },
+            )
+
+            return false
+        }
 
         // Record in stats the costs
 
         this.communeManager.nextSpawnEnergyAvailable -= request.cost
-        updateStat(this.communeManager.room.name, 'eosp', request.cost)
+        statsManager.updateStat(this.communeManager.room.name, 'eosp', request.cost)
 
         // Record spawn usage and check if there is another spawn
         this.spawnIndex -= 1
@@ -254,11 +257,11 @@ export class SpawningStructuresManager {
     }
 
     private findDirections(pos: RoomPosition) {
-        const adjacentCoords = findAdjacentCoordsToCoord(pos)
-
         const anchor = this.communeManager.room.roomManager.anchor
         if (!anchor)
             throw Error('No anchor for spawning structures ' + this.communeManager.room.name)
+
+        const adjacentCoords = findAdjacentCoordsToCoord(pos)
 
         // Sort by distance from the first pos in the path
 
@@ -279,7 +282,7 @@ export class SpawningStructuresManager {
     private constructSpawnRequests(args: SpawnRequestArgs) {
         if (!args) return
 
-        if (args.minCreeps) {
+        if (args.minCreeps !== undefined) {
             // We know how many creeps we want, do them seperately and uniformly
             this.spawnRequestIndividually(args)
             return
@@ -519,11 +522,10 @@ export class SpawningStructuresManager {
 
         // So long as there are totalExtraParts left to assign
 
-        //Guard against bad arguments, otherwise it can cause the block below to get into an infinate loop and crash.
+        // Guard against bad arguments, otherwise it can cause the block below to get into an infinate loop and crash.
         if (args.extraParts.length == 0) {
-            customLog('spawnRequestByGroup error', '0 length extraParts?' + JSON.stringify(args), {
-                textColor: customColors.white,
-                bgColor: customColors.red,
+            customLog('spawnRequestByGroup', '0 length extraParts?' + JSON.stringify(args), {
+                type: LogTypes.error,
             })
             return
         }
@@ -660,10 +662,10 @@ export class SpawningStructuresManager {
     }
 
     createRoomLogisticsRequests() {
-        for (const structure of this.communeManager.room.spawningStructuresByNeed) {
+        for (const structure of this.communeManager.spawningStructuresByNeed) {
             this.communeManager.room.createRoomLogisticsRequest({
                 target: structure,
-                type: 'transfer',
+                type: RoomLogisticsRequestTypes.transfer,
                 priority: 3,
             })
         }
@@ -700,8 +702,11 @@ export class SpawningStructuresManager {
 
     private testRequests() {}
 
+    /**
+     * Debug
+     */
     private visualizeRequests() {
-        if (!this.communeManager.room.flags.spawnRequestVisuals) return
+        if (!Game.flags.spawnRequestVisuals) return
 
         const headers = ['role', 'priority', 'cost']
         const data: any[][] = []
@@ -710,14 +715,13 @@ export class SpawningStructuresManager {
         if (!this.communeManager.spawnRequestsArgs.length)
             this.communeManager.spawnRequestsManager.run()
 
-        this.spawnRequests = []
-
         for (const requestArgs of this.communeManager.spawnRequestsArgs) {
+            this.spawnRequests = []
             this.constructSpawnRequests(requestArgs)
-            customLog('requests', this.spawnRequests.length)
+
             for (let i = 0; i < this.spawnRequests.length; i++) {
                 const request = this.spawnRequests[i]
-                customLog('spawnRequest', i)
+
                 const row: any[] = []
                 row.push(requestArgs.role)
                 row.push(requestArgs.priority)
@@ -725,12 +729,10 @@ export class SpawningStructuresManager {
 
                 data.push(row)
             }
-
-            this.spawnRequests = []
         }
 
         // Reset spawn requests so we can still use them normally for spawning
-        delete this.spawnRequests
+        this.spawnRequests = undefined
 
         const height = 3 + data.length
 
